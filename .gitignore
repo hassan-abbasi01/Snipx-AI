@@ -1,2 +1,37 @@
 node_modules/
+dist/
+
+# Environment files
 .env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+backend/venv/
+
+# Python cache and test artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Runtime logs and temp files
+*.log
+backend/stdout.txt
+backend/stderr.txt
+backend/error.txt
+*.tmp
+*.temp
+
+# Uploaded/generated media artifacts
+uploads/
+backend/uploads/
+*_TEMP_MPY_*
+*TEMP_MPY*
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db

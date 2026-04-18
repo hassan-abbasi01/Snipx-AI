@@ -108,15 +108,6 @@ const Navbar = ({ mobileMenuOpen, setMobileMenuOpen }: NavbarProps) => {
                       Profile
                       <div className="absolute bottom-0 left-0 w-0 h-0.5 bg-gradient-to-r from-purple-600 to-pink-600 group-hover:w-full transition-all duration-300 rounded-full" />
                     </Link>
-                    {user?.email === 'admin@snipx.com' && (
-                      <Link 
-                        to="/admin" 
-                        className="relative text-gray-700 hover:text-purple-600 transition-all duration-300 font-medium group py-2"
-                      >
-                        Admin
-                        <div className="absolute bottom-0 left-0 w-0 h-0.5 bg-gradient-to-r from-purple-600 to-pink-600 group-hover:w-full transition-all duration-300 rounded-full" />
-                      </Link>
-                    )}
                   </>
                 )}
               </nav>
@@ -140,14 +131,16 @@ const Navbar = ({ mobileMenuOpen, setMobileMenuOpen }: NavbarProps) => {
                   </button>
                 </div>
               ) : (
-                <Link 
-                  to="/login"
-                  className="group bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-full hover:from-purple-700 hover:to-pink-700 transition-all duration-300 transform hover:-translate-y-0.5 hover:shadow-lg font-medium"
-                >
-                  <span className="group-hover:scale-105 inline-block transition-transform duration-300">
-                    Get Started
-                  </span>
-                </Link>
+                <>
+                  <Link 
+                    to="/login"
+                    className="group bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-full hover:from-purple-700 hover:to-pink-700 transition-all duration-300 transform hover:-translate-y-0.5 hover:shadow-lg font-medium"
+                  >
+                    <span className="group-hover:scale-105 inline-block transition-transform duration-300">
+                      Get Started
+                    </span>
+                  </Link>
+                </>
               )}
             </div>
             
@@ -209,15 +202,6 @@ const Navbar = ({ mobileMenuOpen, setMobileMenuOpen }: NavbarProps) => {
                   >
                     Profile
                   </Link>
-                  {user?.email === 'admin@snipx.com' && (
-                    <Link 
-                      to="/admin" 
-                      className="block text-gray-700 hover:text-purple-600 transition-colors duration-300 py-3 px-4 rounded-lg hover:bg-purple-50 font-medium transform hover:translate-x-2"
-                      onClick={() => setMobileMenuOpen(false)}
-                    >
-                      Admin
-                    </Link>
-                  )}
                   <div className="pt-4 border-t border-gray-200">
                     <div className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg mb-4">
                       <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
@@ -237,7 +221,7 @@ const Navbar = ({ mobileMenuOpen, setMobileMenuOpen }: NavbarProps) => {
                   </div>
                 </>
               ) : (
-                <div className="pt-4 border-t border-gray-200">
+                <div className="pt-4 border-t border-gray-200 space-y-3">
                   <Link 
                     to="/login"
                     className="block w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 px-4 rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all duration-300 text-center font-medium"

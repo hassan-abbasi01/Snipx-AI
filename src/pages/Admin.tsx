@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   Users, 
   Video, 
@@ -17,6 +18,8 @@ import {
   Sparkles
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
 interface AdminStats {
   totalUsers: number;
@@ -49,7 +52,33 @@ interface VideoData {
   processingOptions: string[];
 }
 
+type StatColor = 'blue' | 'green' | 'purple' | 'yellow' | 'red' | 'indigo';
+
+const statColorClasses: Record<StatColor, { bg: string; icon: string }> = {
+  blue: { bg: 'bg-blue-100', icon: 'text-blue-600' },
+  green: { bg: 'bg-green-100', icon: 'text-green-600' },
+  purple: { bg: 'bg-purple-100', icon: 'text-purple-600' },
+  yellow: { bg: 'bg-yellow-100', icon: 'text-yellow-600' },
+  red: { bg: 'bg-red-100', icon: 'text-red-600' },
+  indigo: { bg: 'bg-indigo-100', icon: 'text-indigo-600' },
+};
+
+const activityColorClasses: Record<'green' | 'blue', { bg: string; icon: string }> = {
+  green: { bg: 'bg-green-100', icon: 'text-green-600' },
+  blue: { bg: 'bg-blue-100', icon: 'text-blue-600' },
+};
+
+const getResponseErrorMessage = async (response: Response) => {
+  try {
+    const payload = await response.json();
+    return payload?.message || payload?.error || `Request failed (${response.status})`;
+  } catch {
+    return `Request failed (${response.status})`;
+  }
+};
+
 const Admin = () => {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [users, setUsers] = useState<UserData[]>([]);
@@ -59,9 +88,44 @@ const Admin = () => {
   const [loading, setLoading] = useState(true);
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
 
+  const handleTabChange = (tabId: string) => {
+    setActiveTab(tabId);
+    setSearchTerm('');
+    setFilterStatus('all');
+  };
+
   useEffect(() => {
+    // Check if user is admin
+    const adminToken = localStorage.getItem('admin_token');
+    if (!adminToken) {
+      // Try to login as admin if logged in as admin@snipx.com
+      let isAdminUser = false;
+      try {
+        const rawUser = localStorage.getItem('user');
+        const parsedUser = rawUser ? JSON.parse(rawUser) : null;
+        isAdminUser = parsedUser?.email === 'admin@snipx.com';
+      } catch {
+        isAdminUser = false;
+      }
+
+      if (!isAdminUser) {
+        toast.error('Access denied. Admin only.');
+        navigate('/');
+        return;
+      }
+    }
     loadAdminData();
-  }, []);
+  }, [navigate]);
+
+  const getAdminTokenOrRedirect = () => {
+    const token = localStorage.getItem('admin_token');
+    if (!token) {
+      toast.error('Admin session expired. Please login again.');
+      navigate('/admin/login');
+      return null;
+    }
+    return token;
+  };
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -77,73 +141,82 @@ const Admin = () => {
 
   const loadAdminData = async () => {
     try {
-      // Mock data - replace with actual API calls
+      const token = getAdminTokenOrRedirect();
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      };
+
+      const [statsResponse, usersResponse, videosResponse] = await Promise.all([
+        fetch(`${API_URL}/admin/dashboard/stats`, { headers }),
+        fetch(`${API_URL}/admin/users?page=1&limit=100`, { headers }),
+        fetch(`${API_URL}/admin/videos?page=1&limit=200`, { headers }),
+      ]);
+
+      if (!statsResponse.ok) {
+        throw new Error(await getResponseErrorMessage(statsResponse));
+      }
+
+      const statsData = await statsResponse.json();
+      if (!statsData.success) {
+        throw new Error(statsData.message || 'Failed to load dashboard stats');
+      }
+
       setStats({
-        totalUsers: 1247,
-        totalVideos: 5832,
-        totalProcessingTime: 12450,
-        activeUsers: 342,
-        storageUsed: 2.4, // TB
-        monthlyGrowth: 15.3
+        totalUsers: statsData.stats.total_users || 0,
+        totalVideos: statsData.stats.total_videos || 0,
+        totalProcessingTime: Math.round((statsData.stats.avg_video_duration || 0) * statsData.stats.total_videos / 60),
+        activeUsers: statsData.stats.active_users_today || 0,
+        storageUsed: parseFloat((statsData.stats.total_storage_bytes / (1024 ** 4)).toFixed(2)) || 0,
+        monthlyGrowth: 15.3,
       });
 
-      setUsers([
-        {
-          id: '1',
-          email: 'john.doe@example.com',
-          firstName: 'John',
-          lastName: 'Doe',
-          joinDate: '2024-01-15',
-          lastActive: '2024-01-25',
-          videosProcessed: 23,
-          status: 'active'
-        },
-        {
-          id: '2',
-          email: 'jane.smith@example.com',
-          firstName: 'Jane',
-          lastName: 'Smith',
-          joinDate: '2024-01-10',
-          lastActive: '2024-01-24',
-          videosProcessed: 45,
-          status: 'active'
-        },
-        {
-          id: '3',
-          email: 'bob.wilson@example.com',
-          firstName: 'Bob',
-          lastName: 'Wilson',
-          joinDate: '2023-12-20',
-          lastActive: '2024-01-20',
-          videosProcessed: 12,
-          status: 'inactive'
+      if (usersResponse.ok) {
+        const usersData = await usersResponse.json();
+        if (usersData.success) {
+          const mappedUsers: UserData[] = (usersData.users || []).map((user: any) => ({
+            id: user.id,
+            email: user.email || 'unknown@user.com',
+            firstName: user.first_name || '',
+            lastName: user.last_name || '',
+            joinDate: user.created_at || new Date().toISOString(),
+            lastActive: user.last_active || user.created_at || new Date().toISOString(),
+            videosProcessed: Number(user.video_count || 0),
+            status: 'active',
+          }));
+          setUsers(mappedUsers);
         }
-      ]);
+      }
 
-      setVideos([
-        {
-          id: '1',
-          filename: 'presentation.mp4',
-          userId: '1',
-          userEmail: 'john.doe@example.com',
-          uploadDate: '2024-01-25',
-          status: 'completed',
-          size: 45000000,
-          processingOptions: ['cut_silence', 'generate_subtitles']
-        },
-        {
-          id: '2',
-          filename: 'tutorial.mov',
-          userId: '2',
-          userEmail: 'jane.smith@example.com',
-          uploadDate: '2024-01-24',
-          status: 'processing',
-          size: 78000000,
-          processingOptions: ['enhance_audio', 'generate_thumbnail']
+      if (videosResponse.ok) {
+        const videosData = await videosResponse.json();
+        if (videosData.success) {
+          const mappedVideos: VideoData[] = (videosData.videos || []).map((video: any) => ({
+            id: video.id,
+            filename: video.title || 'untitled.mp4',
+            userId: '',
+            userEmail: video.user_email || 'Unknown',
+            uploadDate: video.uploaded_at || new Date().toISOString(),
+            status: video.status || 'uploaded',
+            size: Number(video.file_size || 0),
+            processingOptions: [video.enhanced ? 'enhanced' : 'standard'],
+          }));
+          setVideos(mappedVideos);
         }
-      ]);
+      }
+      
+      toast.success('Admin data loaded successfully');
     } catch (error) {
-      toast.error('Failed to load admin data');
+      console.error('Admin data load error:', error);
+      const msg = error instanceof Error ? error.message : 'Failed to load admin data';
+      toast.error(msg);
+      setUsers([]);
+      setVideos([]);
     } finally {
       setLoading(false);
     }
@@ -151,12 +224,69 @@ const Admin = () => {
 
   const handleUserAction = (userId: string, action: 'suspend' | 'activate' | 'delete') => {
     // Handle user actions
-    toast.success(`User ${action}d successfully`);
+    toast.success(`User ${userId} ${action}d successfully`);
   };
 
-  const handleVideoAction = (videoId: string, action: 'view' | 'download' | 'delete') => {
-    // Handle video actions
-    toast.success(`Video ${action} action completed`);
+  const handleVideoAction = async (videoId: string, action: 'view' | 'download' | 'delete') => {
+    const token = getAdminTokenOrRedirect();
+    if (!token) return;
+
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    };
+
+    try {
+      if (action === 'view') {
+        navigate('/admin/videos');
+        return;
+      }
+
+      if (action === 'download') {
+        const response = await fetch(`${API_URL}/admin/videos/${videoId}/download`, {
+          method: 'GET',
+          headers,
+        });
+
+        if (!response.ok) {
+          throw new Error(await getResponseErrorMessage(response));
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `video_${videoId}.mp4`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        toast.success('Video downloaded successfully');
+        return;
+      }
+
+      if (action === 'delete') {
+        const confirmed = window.confirm('Are you sure you want to delete this video?');
+        if (!confirmed) return;
+
+        const response = await fetch(`${API_URL}/admin/videos/${videoId}`, {
+          method: 'DELETE',
+          headers,
+          body: JSON.stringify({ reason: 'Deleted from admin panel' }),
+        });
+
+        if (!response.ok) {
+          throw new Error(await getResponseErrorMessage(response));
+        }
+
+        setVideos((prev) => prev.filter((video) => video.id !== videoId));
+        toast.success('Video deleted successfully');
+        loadAdminData();
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : `Failed to ${action} video`;
+      toast.error(msg);
+    }
   };
 
   const formatFileSize = (bytes: number) => {
@@ -264,7 +394,7 @@ const Admin = () => {
               ].map((tab, index) => (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleTabChange(tab.id)}
                   className={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-medium transition-all duration-300 transform hover:scale-105 hover:-translate-y-1 animate-slide-in-stagger-3d ${
                     activeTab === tab.id
                       ? 'bg-gradient-to-r from-purple-100 to-pink-100 text-purple-700 shadow-lg'
@@ -294,15 +424,17 @@ const Admin = () => {
                     { icon: TrendingUp, label: 'Monthly Growth', value: `${stats?.monthlyGrowth}%`, color: 'yellow', delay: '300ms' },
                     { icon: BarChart3, label: 'Storage Used', value: `${stats?.storageUsed} TB`, color: 'red', delay: '400ms' },
                     { icon: Activity, label: 'Processing Time', value: `${stats?.totalProcessingTime.toLocaleString()} min`, color: 'indigo', delay: '500ms' }
-                  ].map((stat, index) => (
+                  ].map((stat) => {
+                    const colorStyles = statColorClasses[stat.color as StatColor];
+                    return (
                     <div 
                       key={stat.label}
                       className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl p-6 border border-white/20 transform hover:scale-105 hover:-translate-y-2 transition-all duration-300 hover:shadow-2xl animate-card-float-3d interactive-3d"
                       style={{ animationDelay: stat.delay }}
                     >
                       <div className="flex items-center">
-                        <div className={`bg-${stat.color}-100 rounded-2xl p-4 shadow-lg transform hover:rotateY(15deg) transition-all duration-300`}>
-                          <stat.icon className={`text-${stat.color}-600`} size={28} />
+                        <div className={`${colorStyles.bg} rounded-2xl p-4 shadow-lg transform hover:rotateY(15deg) transition-all duration-300`}>
+                          <stat.icon className={colorStyles.icon} size={28} />
                         </div>
                         <div className="ml-4">
                           <p className="text-sm font-medium text-gray-600">{stat.label}</p>
@@ -310,7 +442,7 @@ const Admin = () => {
                         </div>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
 
                 {/* Recent Activity */}
@@ -323,15 +455,17 @@ const Admin = () => {
                     {[
                       { icon: Video, text: 'Video processed successfully', detail: 'presentation.mp4 by john.doe@example.com', time: '2 min ago', color: 'green' },
                       { icon: Users, text: 'New user registered', detail: 'alice.johnson@example.com', time: '5 min ago', color: 'blue' }
-                    ].map((activity, index) => (
+                    ].map((activity, index) => {
+                      const activityStyles = activityColorClasses[activity.color as 'green' | 'blue'];
+                      return (
                       <div 
                         key={index}
                         className="flex items-center justify-between py-4 border-b border-gray-100 last:border-b-0 animate-slide-in-stagger-3d hover:bg-purple-50/50 rounded-xl px-4 transition-all duration-300"
                         style={{ animationDelay: `${index * 200}ms` }}
                       >
                         <div className="flex items-center">
-                          <div className={`bg-${activity.color}-100 rounded-full p-3 mr-4 shadow-lg transform hover:scale-110 transition-all duration-300`}>
-                            <activity.icon className={`text-${activity.color}-600`} size={16} />
+                          <div className={`${activityStyles.bg} rounded-full p-3 mr-4 shadow-lg transform hover:scale-110 transition-all duration-300`}>
+                            <activity.icon className={activityStyles.icon} size={16} />
                           </div>
                           <div>
                             <p className="text-sm font-medium text-gray-900">{activity.text}</p>
@@ -340,7 +474,7 @@ const Admin = () => {
                         </div>
                         <span className="text-xs text-gray-500">{activity.time}</span>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </div>
               </div>
@@ -462,6 +596,119 @@ const Admin = () => {
               </div>
             )}
 
+            {activeTab === 'videos' && (
+              <div className="space-y-6">
+                <h2 className="text-3xl font-bold text-gray-900 animate-slide-in-3d">Video Management</h2>
+
+                <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl p-6 border border-white/20 animate-slide-up-3d">
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="flex-1 relative group">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 group-hover:text-purple-500 transition-colors" size={16} />
+                      <input
+                        type="text"
+                        placeholder="Search videos by filename or user email..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 bg-white/80 backdrop-blur-sm transition-all duration-300 hover:shadow-lg"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Filter size={16} className="text-gray-400" />
+                      <select
+                        value={filterStatus}
+                        onChange={(e) => setFilterStatus(e.target.value)}
+                        className="px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 bg-white/80 backdrop-blur-sm transition-all duration-300 hover:shadow-lg"
+                      >
+                        <option value="all">All Status</option>
+                        <option value="completed">Completed</option>
+                        <option value="processing">Processing</option>
+                        <option value="failed">Failed</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl overflow-hidden border border-white/20 animate-slide-up-3d">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gradient-to-r from-purple-50 to-pink-50">
+                        <tr>
+                          {['Video', 'User', 'Status', 'Size', 'Upload Date', 'Processing', 'Actions'].map((header) => (
+                            <th
+                              key={header}
+                              className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                            >
+                              {header}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white/50 backdrop-blur-sm divide-y divide-gray-200">
+                        {filteredVideos.length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="px-6 py-10 text-center text-sm text-gray-500">
+                              No videos found for the current search/filter.
+                            </td>
+                          </tr>
+                        )}
+                        {filteredVideos.map((video) => (
+                          <tr key={video.id} className="hover:bg-purple-50/50 transition-all duration-300">
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{video.filename}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{video.userEmail}</td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span
+                                className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${
+                                  video.status === 'completed'
+                                    ? 'bg-green-100 text-green-800'
+                                    : video.status === 'processing'
+                                    ? 'bg-yellow-100 text-yellow-800'
+                                    : 'bg-red-100 text-red-800'
+                                }`}
+                              >
+                                {video.status}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{formatFileSize(video.size)}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                              {new Date(video.uploadDate).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-gray-600">
+                              {video.processingOptions.join(', ')}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleVideoAction(video.id, 'view')}
+                                  className="p-2 rounded-lg bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
+                                  title="View"
+                                >
+                                  <Eye size={14} />
+                                </button>
+                                <button
+                                  onClick={() => handleVideoAction(video.id, 'download')}
+                                  className="p-2 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 transition-colors"
+                                  title="Download"
+                                >
+                                  <Download size={14} />
+                                </button>
+                                <button
+                                  onClick={() => handleVideoAction(video.id, 'delete')}
+                                  className="p-2 rounded-lg bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+                                  title="Delete"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Add similar 3D enhancements to other tabs... */}
             {activeTab === 'analytics' && (
               <div className="space-y-6">
@@ -485,6 +732,31 @@ const Admin = () => {
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'support' && (
+              <div className="space-y-6">
+                <div className="flex justify-between items-center">
+                  <h2 className="text-3xl font-bold text-gray-900 animate-slide-in-3d">Support Tickets</h2>
+                  <button
+                    onClick={() => navigate('/admin/support')}
+                    className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl hover:from-purple-700 hover:to-pink-700 transition-all duration-300 transform hover:scale-105 text-sm font-medium"
+                  >
+                    Open Full Support Panel
+                  </button>
+                </div>
+                <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl p-8 border border-white/20 animate-slide-up-3d text-center">
+                  <MessageSquare size={48} className="mx-auto text-purple-500 mb-4" />
+                  <h3 className="text-xl font-semibold text-gray-900 mb-2">Support Ticket Management</h3>
+                  <p className="text-gray-600 mb-6">View and respond to user support tickets in the dedicated panel.</p>
+                  <button
+                    onClick={() => navigate('/admin/support')}
+                    className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl hover:from-purple-700 hover:to-pink-700 transition-all duration-300 transform hover:scale-105 font-medium"
+                  >
+                    Go to Support Panel
+                  </button>
                 </div>
               </div>
             )}
