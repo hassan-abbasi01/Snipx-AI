@@ -221,6 +221,23 @@ def require_auth(f):
     decorated.__name__ = f.__name__
     return decorated
 
+@app.route('/api', methods=['GET'])
+def api_root():
+    """Simple root endpoint so deployed API base URL does not return 404."""
+    return jsonify({
+        'message': 'SnipX API is running',
+        'status': 'ok',
+        'health': '/api/health'
+    }), 200
+
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    """Lightweight health check endpoint for deployment probes."""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
 @app.route('/api/system/gpu-status', methods=['GET'])
 def get_gpu_status():
     """Get current GPU status and availability"""
