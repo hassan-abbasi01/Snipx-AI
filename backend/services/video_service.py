@@ -2008,6 +2008,20 @@ class VideoService:
         self._subtitle_whisper_model = None
         self._subtitle_whisper_model_key = None
 
+    def _to_bson_safe(self, value):
+        """Recursively convert numpy values to native Python types for MongoDB."""
+        if isinstance(value, dict):
+            return {k: self._to_bson_safe(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._to_bson_safe(v) for v in value]
+        if isinstance(value, tuple):
+            return [self._to_bson_safe(v) for v in value]
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return self._to_bson_safe(value.tolist())
+        return value
+
     def save_video(self, file, user_id):
         if not file:
             raise ValueError("No file provided")
@@ -2257,6 +2271,7 @@ class VideoService:
             # This prevents the race condition where frontend fetches data before DB is updated
             update_dict = video.to_dict()
             update_dict.pop('_id', None)  # Remove _id if present
+            update_dict = self._to_bson_safe(update_dict)
             
             print(f"[VIDEO SERVICE] Saving final state to DB: status={video.status}")
             self.videos.update_one(

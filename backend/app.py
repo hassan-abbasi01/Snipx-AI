@@ -1584,7 +1584,15 @@ def get_transcript(user_id, video_id):
             # Re-fetch video
             video = video_service.get_video(video_id)
             if not video or not video.transcript or video.transcript.get('total_words', 0) == 0:
-                return jsonify({'error': 'Transcript not available'}), 404
+                logger.warning("[TRANSCRIPT] Transcript still empty after regeneration; returning empty payload")
+                return jsonify({
+                    'text': '',
+                    'words': [],
+                    'filler_count': 0,
+                    'repeated_count': 0,
+                    'total_words': 0,
+                    'duration': (video.metadata.get('duration', 0) if video and video.metadata else 0)
+                }), 200
         
         logger.info(f"[TRANSCRIPT] Returning transcript: {video.transcript['total_words']} words")
         return jsonify(video.transcript), 200
