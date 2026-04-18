@@ -1456,9 +1456,59 @@ class AudioEnhancer:
                             })
                 return extracted
 
+            def _extract_segment_fallback_words(result_obj):
+                """Fallback when word timestamps are missing: derive pseudo-words from segment text."""
+                extracted = []
+                for seg in result_obj.get('segments', []):
+                    seg_text = str(seg.get('text', '') or '').strip()
+                    if not seg_text:
+                        continue
+
+                    seg_start = float(seg.get('start', 0) or 0)
+                    seg_end = float(seg.get('end', seg_start) or seg_start)
+                    if seg_end < seg_start:
+                        seg_end = seg_start
+
+                    raw_tokens = [tok for tok in re.findall(r"\S+", seg_text) if str(tok).strip()]
+                    normalized_tokens = []
+                    for tok in raw_tokens:
+                        token_norm = self._normalize_token(tok)
+                        if token_norm:
+                            normalized_tokens.append((tok, token_norm))
+
+                    if not normalized_tokens:
+                        continue
+
+                    seg_duration = max(seg_end - seg_start, 0.0)
+                    token_count = len(normalized_tokens)
+                    token_duration = (seg_duration / token_count) if seg_duration > 0 else 0.01
+
+                    for idx, (raw_token, token_norm) in enumerate(normalized_tokens):
+                        word_start = seg_start + (idx * token_duration)
+                        if seg_duration > 0:
+                            word_end = seg_start + ((idx + 1) * token_duration)
+                        else:
+                            word_end = word_start + 0.01
+
+                        extracted.append({
+                            'text': token_norm,
+                            'original': str(raw_token).strip(),
+                            'start': word_start,
+                            'end': word_end,
+                            'duration': max(word_end - word_start, 0.0),
+                        })
+
+                return extracted
+
             # Collect all words
             # NOTE: whisper-timestamped uses 'text' key, standard Whisper uses 'word' key
             all_words = _extract_all_words(result)
+
+            if not all_words and result.get('segments'):
+                print("[TRANSCRIPT] Word-level timestamps missing, using segment fallback tokenization")
+                all_words = _extract_segment_fallback_words(result)
+                if all_words:
+                    print(f"[TRANSCRIPT] Segment fallback generated {len(all_words)} pseudo-words")
             
             print(f"[TRANSCRIPT] Extracted {len(all_words)} words")
             if all_words:
