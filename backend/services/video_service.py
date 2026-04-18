@@ -2688,6 +2688,10 @@ class VideoService:
             
             # Save final enhanced video with GPU acceleration
             output_path = f"{os.path.splitext(video.filepath)[0]}_{video_tag}_enhanced.mp4"
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            temp_audio_path = f"{os.path.splitext(output_path)[0]}_temp_audio.m4a"
             encoder = get_ffmpeg_encoder('h264')
             print(f"[AUDIO ENHANCE] Using encoder: {encoder}")
             print(f"[AUDIO ENHANCE] Starting video encoding - this may take a while...")
@@ -2700,20 +2704,37 @@ class VideoService:
                     preset='medium' if 'nvenc' not in encoder else 'p4',
                     verbose=False,
                     logger=None,
+                    temp_audiofile=temp_audio_path,
+                    remove_temp=True,
                     threads=4  # Limit threads to prevent hanging
                 )
                 print(f"[AUDIO ENHANCE] Video encoding completed!")
             except Exception as encode_error:
                 print(f"[AUDIO ENHANCE] Encoding failed with {encoder}, trying fallback...")
                 print(f"[AUDIO ENHANCE] Error: {encode_error}")
+
+                # Remove partial output/temp artifacts before fallback encode.
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                if os.path.exists(temp_audio_path):
+                    try:
+                        os.remove(temp_audio_path)
+                    except Exception:
+                        pass
+
                 # Fallback to libx264
                 enhanced_clip.write_videofile(
                     output_path, 
                     codec='libx264', 
                     audio_codec='aac',
                     preset='medium',
-                    verbose=True,  # Enable verbose for debugging
-                    logger='bar',
+                    verbose=False,
+                    logger=None,
+                    temp_audiofile=temp_audio_path,
+                    remove_temp=True,
                     threads=4
                 )
                 print(f"[AUDIO ENHANCE] Video encoding completed with fallback!")

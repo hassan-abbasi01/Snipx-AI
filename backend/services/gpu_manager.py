@@ -6,6 +6,7 @@ import torch
 import cv2
 import subprocess
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class GPUManager:
         self.gpu_info = self._detect_gpu()
         self.device = "cuda" if self.has_cuda else "cpu"
         self.opencv_cuda = self._check_opencv_cuda()
+        self._encoder_runtime_cache = {}
         
         # Log GPU status
         self._log_gpu_status()
@@ -82,15 +84,20 @@ class GPUManager:
     
     def get_ffmpeg_encoder(self, codec='h264'):
         """Get FFmpeg encoder based on GPU availability"""
+        cpu_encoders = {
+            'h264': 'libx264',
+            'h265': 'libx265',
+            'vp9': 'libvpx-vp9'
+        }
+        cpu_fallback = cpu_encoders.get(codec, 'libx264')
+
+        if str(os.getenv('FORCE_CPU_FFMPEG_ENCODER', 'false')).lower() in ('1', 'true', 'yes', 'on'):
+            logger.info(f"FORCE_CPU_FFMPEG_ENCODER enabled, using CPU encoder: {cpu_fallback}")
+            return cpu_fallback
+
         if not self.has_cuda:
-            # CPU encoders
-            encoders = {
-                'h264': 'libx264',
-                'h265': 'libx265',
-                'vp9': 'libvpx-vp9'
-            }
-            logger.info(f"Using CPU encoder: {encoders.get(codec, 'libx264')}")
-            return encoders.get(codec, 'libx264')
+            logger.info(f"Using CPU encoder: {cpu_fallback}")
+            return cpu_fallback
         
         # NVIDIA GPU encoders (NVENC)
         gpu_encoders = {
@@ -101,14 +108,22 @@ class GPUManager:
         
         # Check if NVENC is available
         encoder = gpu_encoders.get(codec, 'h264_nvenc')
-        if self._check_ffmpeg_encoder(encoder):
-            logger.info(f"✅ Using GPU encoder: {encoder}")
-            return encoder
-        else:
-            # Fallback to CPU
-            fallback = 'libx264' if codec == 'h264' else 'libx265'
-            logger.warning(f"GPU encoder {encoder} not available, using CPU: {fallback}")
-            return fallback
+        if not self._check_ffmpeg_encoder(encoder):
+            logger.warning(f"GPU encoder {encoder} not available, using CPU: {cpu_fallback}")
+            return cpu_fallback
+
+        if encoder in ('h264_nvenc', 'hevc_nvenc'):
+            runtime_ok = self._encoder_runtime_cache.get(encoder)
+            if runtime_ok is None:
+                runtime_ok = self._check_ffmpeg_encoder_runtime(encoder)
+                self._encoder_runtime_cache[encoder] = runtime_ok
+
+            if not runtime_ok:
+                logger.warning(f"GPU encoder {encoder} detected but unusable at runtime, using CPU: {cpu_fallback}")
+                return cpu_fallback
+
+        logger.info(f"✅ Using GPU encoder: {encoder}")
+        return encoder
     
     def get_ffmpeg_decoder(self):
         """Get FFmpeg decoder based on GPU availability"""
@@ -130,6 +145,30 @@ class GPUManager:
             )
             return encoder_name in result.stdout
         except:
+            return False
+
+    def _check_ffmpeg_encoder_runtime(self, encoder_name):
+        """Quick runtime probe to ensure encoder can actually start encoding."""
+        try:
+            probe_cmd = [
+                'ffmpeg',
+                '-v', 'error',
+                '-f', 'lavfi',
+                '-i', 'color=c=black:s=16x16:d=0.1',
+                '-an',
+                '-c:v', encoder_name,
+                '-f', 'null',
+                '-'
+            ]
+            result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=12)
+            if result.returncode == 0:
+                return True
+
+            stderr = (result.stderr or '').strip()
+            logger.warning(f"Encoder runtime probe failed for {encoder_name}: {stderr[:300]}")
+            return False
+        except Exception as e:
+            logger.warning(f"Encoder runtime probe exception for {encoder_name}: {e}")
             return False
     
     def get_ffmpeg_hwaccel_args(self):
