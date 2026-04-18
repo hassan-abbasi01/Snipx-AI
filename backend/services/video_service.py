@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 from datetime import datetime
 from uuid import uuid4
 from models.video import Video
@@ -70,22 +71,54 @@ from services.gpu_manager import (
     get_ffmpeg_decoder, get_hwaccel_args, has_gpu, clear_cache
 )
 
-# Set FFmpeg path for Windows (updated for current PC)
-FFMPEG_PATH = r"C:\Users\Cv\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin"
-if FFMPEG_PATH not in os.environ.get('PATH', ''):
-    os.environ['PATH'] = FFMPEG_PATH + os.pathsep + os.environ.get('PATH', '')
+# Cross-platform FFmpeg discovery (RunPod/Linux + Windows support)
+def _resolve_ffmpeg_binary(binary_name):
+    # 1) Explicit path override from env (can be full path to binary)
+    env_path = os.getenv(binary_name.upper() + '_PATH')
+    if env_path and os.path.exists(env_path):
+        return env_path
 
-# Set FFmpeg for imageio
-os.environ['IMAGEIO_FFMPEG_EXE'] = os.path.join(FFMPEG_PATH, 'ffmpeg.exe')
+    # 2) Explicit directory override from env
+    ffmpeg_dir = os.getenv('FFMPEG_DIR')
+    if ffmpeg_dir:
+        binary = binary_name + ('.exe' if os.name == 'nt' else '')
+        candidate = os.path.join(ffmpeg_dir, binary)
+        if os.path.exists(candidate):
+            return candidate
 
-# Configure AudioSegment to use FFmpeg
-AudioSegment.converter = os.path.join(FFMPEG_PATH, 'ffmpeg.exe')
-AudioSegment.ffmpeg = os.path.join(FFMPEG_PATH, 'ffmpeg.exe')
-AudioSegment.ffprobe = os.path.join(FFMPEG_PATH, 'ffprobe.exe')
+    # 3) Auto-detect from PATH
+    found = shutil.which(binary_name)
+    if found:
+        return found
 
-# CRITICAL: Configure MoviePy to use FFmpeg
+    # 4) Windows legacy fallback path
+    if os.name == 'nt':
+        legacy_dir = r"C:\Users\Cv\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin"
+        legacy_candidate = os.path.join(legacy_dir, binary_name + '.exe')
+        if os.path.exists(legacy_candidate):
+            return legacy_candidate
+
+    # Final fallback assumes binary is available in runtime PATH
+    return binary_name
+
+
+FFMPEG_BIN = _resolve_ffmpeg_binary('ffmpeg')
+FFPROBE_BIN = _resolve_ffmpeg_binary('ffprobe')
+
+# Ensure binary folder is on PATH when absolute binary path is resolved.
+ffmpeg_bin_dir = os.path.dirname(FFMPEG_BIN) if os.path.isabs(FFMPEG_BIN) else None
+if ffmpeg_bin_dir and ffmpeg_bin_dir not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = ffmpeg_bin_dir + os.pathsep + os.environ.get('PATH', '')
+
+# Set FFmpeg for imageio / pydub
+os.environ['IMAGEIO_FFMPEG_EXE'] = FFMPEG_BIN
+AudioSegment.converter = FFMPEG_BIN
+AudioSegment.ffmpeg = FFMPEG_BIN
+AudioSegment.ffprobe = FFPROBE_BIN
+
+# Configure MoviePy to use resolved FFmpeg binary
 from moviepy.config import change_settings
-change_settings({"FFMPEG_BINARY": os.path.join(FFMPEG_PATH, 'ffmpeg.exe')})
+change_settings({"FFMPEG_BINARY": FFMPEG_BIN})
 
 # Log GPU status on startup
 print("\n" + "=" * 60)
@@ -825,9 +858,13 @@ class AudioEnhancer:
                     return None
                 
                 import whisper
-                device = get_device()
-                print(f"[AUDIO ENHANCER] Loading Whisper 'base' model for filler detection on {device}...")
-                self._whisper_model = whisper.load_model("base", device=device)
+                model_size = os.getenv("FILLER_WHISPER_MODEL", "base").strip() or "base"
+                device = os.getenv("FILLER_WHISPER_DEVICE", "auto").strip().lower() or "auto"
+                if device == "auto":
+                    device = get_device()
+
+                print(f"[AUDIO ENHANCER] Loading Whisper '{model_size}' model for filler detection on {device}...")
+                self._whisper_model = whisper.load_model(model_size, device=device)
                 print(f"[AUDIO ENHANCER] ✅ Whisper model loaded successfully on {device}")
             except Exception as e:
                 print(f"[AUDIO ENHANCER] ❌ Failed to load Whisper: {e}")
@@ -3460,9 +3497,9 @@ class VideoService:
                 print(f"[SUBTITLE DEBUG] Starting Whisper transcription...")
                 print(f"[SUBTITLE DEBUG] Using OpenAI Whisper for transcription")
                 
-                # Configurable subtitle model/device with safe defaults.
-                model_size = os.getenv("SUBTITLE_WHISPER_MODEL", "base")
-                device = os.getenv("SUBTITLE_WHISPER_DEVICE", "cpu").strip().lower() or "cpu"
+                # Configurable subtitle model/device with deployment-friendly defaults.
+                model_size = os.getenv("SUBTITLE_WHISPER_MODEL", "small").strip() or "small"
+                device = os.getenv("SUBTITLE_WHISPER_DEVICE", "auto").strip().lower() or "auto"
                 if device == "auto":
                     device = get_device()
                 
@@ -5164,7 +5201,7 @@ Respond in this exact JSON format:
         duration = clip.duration
         clip.close()
 
-        ffmpeg_path = os.path.join(FFMPEG_PATH, 'ffmpeg.exe')
+        ffmpeg_path = FFMPEG_BIN
 
         temp_files = []
         working_input = video.filepath

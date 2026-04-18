@@ -160,7 +160,13 @@ oauth.register(
 
 @app.route('/api/auth/google/login')
 def google_login():
-    redirect_uri = url_for('google_callback', _external=True)
+    # Prefer explicit backend URL in deployment; fallback to incoming host.
+    backend_url = os.getenv('BACKEND_URL', request.host_url.rstrip('/'))
+    if backend_url.startswith('http://') and ('ngrok' in backend_url or 'runpod' in backend_url):
+        backend_url = backend_url.replace('http://', 'https://')
+
+    redirect_uri = f"{backend_url}/api/auth/google/callback"
+    logger.info(f"[OAUTH] Google login redirect URI: {redirect_uri}")
     return oauth.google.authorize_redirect(redirect_uri)
 
 @app.route('/api/auth/google/callback')
@@ -182,7 +188,11 @@ def google_callback():
         user_id = str(user['_id'])
 
     jwt_token = auth_service.generate_token(user_id)
-    return redirect(f"http://localhost:5173/auth/callback?token={jwt_token}")
+
+    # Redirect to configured frontend URL for local/prod environments.
+    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+    logger.info(f"[OAUTH] Redirecting to frontend: {frontend_url}")
+    return redirect(f"{frontend_url}/auth/callback?token={jwt_token}")
 
 
 
@@ -2234,4 +2244,6 @@ def reply_to_ticket(ticket_id):
 
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, use_reloader=False, host='0.0.0.0', port=5001)
+    debug_mode = str(os.getenv('FLASK_DEBUG', 'False')).lower() in ('1', 'true', 'yes', 'on')
+    port = int(os.getenv('PORT', 5001))
+    socketio.run(app, debug=debug_mode, use_reloader=False, host='0.0.0.0', port=port)
