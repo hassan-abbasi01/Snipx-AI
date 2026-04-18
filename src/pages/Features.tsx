@@ -174,9 +174,9 @@ const Features = () => {
   const [subtitleData, setSubtitleData] = useState<any[]>([]);
   const [showConsole, setShowConsole] = useState<boolean>(false);
 
-  const processingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const processingIntervalRef = useRef<number | null>(null);
   const consoleRef = useRef<HTMLDivElement>(null);
-  const statusCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const statusCheckIntervalRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const featuresRef = useRef<HTMLDivElement>(null);
   const wsCleanupRef = useRef<(() => void) | null>(null);
@@ -502,7 +502,7 @@ const Features = () => {
 
     // Check immediately and then every 2 seconds
     checkStatus();
-    statusCheckIntervalRef.current = setInterval(checkStatus, 2000);
+    statusCheckIntervalRef.current = window.setInterval(checkStatus, 2000);
   };
 
   // Demo processing function
@@ -584,7 +584,7 @@ const Features = () => {
 
       // Track whether WebSocket is delivering updates
       let wsActive = false;
-      let pollTimer: NodeJS.Timeout | null = null;
+      let pollTimer: number | null = null;
       let completed = false;
 
       // Helper: when processing finishes (called once)
@@ -665,7 +665,7 @@ const Features = () => {
           logToConsole('Using polling for progress updates', 'info');
         }
         // Poll regardless as a safety net
-        pollTimer = setInterval(async () => {
+        pollTimer = window.setInterval(async () => {
           if (completed) { if (pollTimer) clearInterval(pollTimer); return; }
           try {
             const data = await ApiService.getVideoStatus(uploadedVideoId!);
@@ -916,6 +916,10 @@ const Features = () => {
     );
   };
 
+  const handleProcessAudioClick = () => {
+    handleProcessAudio();
+  };
+
   // FIXED: Enhanced subtitle generation with WebSocket support and fallback
   const handleGenerateSubtitles = async () => {
     if (!uploadedVideoId) {
@@ -926,6 +930,9 @@ const Features = () => {
     
     // Start the processing
     setSubtitlesProgress({ visible: true, percentage: 0, status: 'Starting subtitle generation...' });
+    setGeneratedSubtitles('');
+    setSubtitleData([]);
+    setSubtitleFile(null);
     
     // Clean up previous WebSocket subscription if any
     if (wsCleanupRef.current) {
@@ -935,7 +942,7 @@ const Features = () => {
     
     // Flag to track if WebSocket is working
     let websocketWorking = false;
-    let fallbackTimeout: NodeJS.Timeout | null = null;
+    let fallbackTimeout: number | null = null;
     
     // Try to use WebSocket for real-time updates (optional feature)
     try {
@@ -983,13 +990,12 @@ const Features = () => {
                 await new Promise(r => setTimeout(r, 1000));
                 await fetchWithRetry(retriesLeft - 1);
               } else {
-                logToConsole('No subtitle data found after retries, using fallback', 'info');
-                const sampleSubtitles = generateSampleSubtitles(subtitleLanguage);
-                setGeneratedSubtitles(sampleSubtitles);
-                setSubtitleFile(`subtitles_${subtitleLanguage}.srt`);
+                logToConsole('No subtitle data found after retries', 'error');
+                setGeneratedSubtitles('');
+                setSubtitleFile(null);
                 setSubtitleData([]);
-                setSubtitlesProgress({ visible: false, percentage: 100, status: 'Completed with fallback' });
-                toast.success(`Sample subtitles generated in ${getLanguageName(subtitleLanguage)}`);
+                setSubtitlesProgress({ visible: false, percentage: 0, status: '' });
+                toast.error('No real subtitles found. Please try again.');
               }
             } catch (error) {
               if (retriesLeft > 0) {
@@ -997,12 +1003,11 @@ const Features = () => {
                 await fetchWithRetry(retriesLeft - 1);
               } else {
                 logToConsole(`Error fetching subtitles: ${error}`, 'error');
-                const sampleSubtitles = generateSampleSubtitles(subtitleLanguage);
-                setGeneratedSubtitles(sampleSubtitles);
-                setSubtitleFile(`subtitles_${subtitleLanguage}.srt`);
+                setGeneratedSubtitles('');
+                setSubtitleFile(null);
                 setSubtitleData([]);
-                setSubtitlesProgress({ visible: false, percentage: 100, status: 'Completed with fallback' });
-                toast.success(`Sample subtitles generated in ${getLanguageName(subtitleLanguage)}`);
+                setSubtitlesProgress({ visible: false, percentage: 0, status: '' });
+                toast.error('Failed to fetch real subtitles. Please try again.');
               }
             }
           };
@@ -1065,40 +1070,38 @@ const Features = () => {
               toast.success(`Real subtitles loaded with ${subtitleApiData.length} segments!`);
             } else if (attempts >= maxAttempts) {
               clearInterval(pollInterval);
-              const sampleSubtitles = generateSampleSubtitles(subtitleLanguage);
-              setGeneratedSubtitles(sampleSubtitles);
-              setSubtitleFile(`subtitles_${subtitleLanguage}.srt`);
+              logToConsole('Subtitle generation timed out with no real data', 'error');
+              setGeneratedSubtitles('');
+              setSubtitleFile(null);
               setSubtitleData([]);
-              setSubtitlesProgress({ visible: false, percentage: 100, status: 'Completed with fallback' });
-              toast.success(`Sample subtitles generated in ${getLanguageName(subtitleLanguage)}`);
+              setSubtitlesProgress({ visible: false, percentage: 0, status: '' });
+              toast.error('Subtitle generation timed out. Please try again.');
             }
           } catch (error) {
             if (attempts >= maxAttempts) {
               clearInterval(pollInterval);
-              logToConsole('Polling timeout, using fallback', 'info');
-              const sampleSubtitles = generateSampleSubtitles(subtitleLanguage);
-              setGeneratedSubtitles(sampleSubtitles);
-              setSubtitleFile(`subtitles_${subtitleLanguage}.srt`);
+              logToConsole('Polling timeout with no real subtitles', 'error');
+              setGeneratedSubtitles('');
+              setSubtitleFile(null);
               setSubtitleData([]);
-              setSubtitlesProgress({ visible: false, percentage: 100, status: 'Completed with fallback' });
-              toast.success(`Sample subtitles generated in ${getLanguageName(subtitleLanguage)}`);
+              setSubtitlesProgress({ visible: false, percentage: 0, status: '' });
+              toast.error('No real subtitles available after waiting.');
             }
           }
         }, 3000);
       } else {
-        // Demo mode - use sample subtitles immediately
-        logToConsole('Demo mode: Using sample subtitles', 'info');
-        const sampleSubtitles = generateSampleSubtitles(subtitleLanguage);
-        setGeneratedSubtitles(sampleSubtitles);
-        setSubtitleFile(`subtitles_${subtitleLanguage}.srt`);
+        // Real subtitle generation requires authenticated backend processing.
+        logToConsole('Subtitles require login and backend processing', 'error');
+        setGeneratedSubtitles('');
+        setSubtitleFile(null);
         setSubtitleData([]);
-        setSubtitlesProgress({ visible: false, percentage: 100, status: 'Demo completed' });
-        toast.success(`Sample subtitles generated in ${getLanguageName(subtitleLanguage)}`);
+        setSubtitlesProgress({ visible: false, percentage: 0, status: '' });
+        toast.error('Please login to generate real subtitles');
       }
     };
     
     // Set a timeout - if WebSocket doesn't work within 5 seconds, use polling fallback
-    fallbackTimeout = setTimeout(() => {
+    fallbackTimeout = window.setTimeout(() => {
       if (!websocketWorking) {
         logToConsole('WebSocket not responding, using polling fallback', 'info');
         startPollingFallback();
@@ -1144,85 +1147,6 @@ const Features = () => {
     const secs = Math.floor(seconds % 60);
     const milliseconds = Math.floor((seconds % 1) * 1000);
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${milliseconds.toString().padStart(3, '0')}`;
-  };
-
-  // Helper function to generate sample subtitles based on language
-  const generateSampleSubtitles = (language: string): string => {
-    const subtitleTemplates = {
-      'en': `1
-00:00:00,000 --> 00:00:05,000
-Welcome to this video demonstration
-
-2
-00:00:05,000 --> 00:00:10,000
-This is an example of English subtitles
-
-3
-00:00:10,000 --> 00:00:15,000
-Generated automatically by SnipX AI`,
-      
-      'ur': `1
-00:00:00,000 --> 00:00:05,000
-اس ویڈیو ڈیمونسٹریشن میں خوش آمدید
-
-2
-00:00:05,000 --> 00:00:10,000
-یہ اردو سب ٹائٹلز کی مثال ہے
-
-3
-00:00:10,000 --> 00:00:15,000
-SnipX AI کے ذریعے خودکار طور پر تیار کیا گیا`,
-      
-      'ru-ur': `1
-00:00:00,000 --> 00:00:05,000
-Is video demonstration mein khush aamdeed
-
-2
-00:00:05,000 --> 00:00:10,000
-Yeh Roman Urdu subtitles ki misaal hai
-
-3
-00:00:10,000 --> 00:00:15,000
-SnipX AI ke zariye automatic tayyar kiya gaya`,
-      
-      'es': `1
-00:00:00,000 --> 00:00:05,000
-Bienvenido a esta demostración de video
-
-2
-00:00:05,000 --> 00:00:10,000
-Este es un ejemplo de subtítulos en español
-
-3
-00:00:10,000 --> 00:00:15,000
-Generado automáticamente por SnipX AI`,
-      
-      'fr': `1
-00:00:00,000 --> 00:00:05,000
-Bienvenue dans cette démonstration vidéo
-
-2
-00:00:05,000 --> 00:00:10,000
-Ceci est un exemple de sous-titres français
-
-3
-00:00:10,000 --> 00:00:15,000
-Généré automatiquement par SnipX AI`,
-      
-      'de': `1
-00:00:00,000 --> 00:00:05,000
-Willkommen zu dieser Video-Demonstration
-
-2
-00:00:05,000 --> 00:00:10,000
-Dies ist ein Beispiel für deutsche Untertitel
-
-3
-00:00:10,000 --> 00:00:15,000
-Automatisch generiert von SnipX AI`
-    };
-    
-    return subtitleTemplates[language as keyof typeof subtitleTemplates] || subtitleTemplates['en'];
   };
 
   // Helper function to get language name
@@ -2043,7 +1967,7 @@ Automatisch generiert von SnipX AI`
                 
                 <div className="mt-6 flex flex-col sm:flex-row gap-4">
                   <button 
-                    onClick={handleProcessAudio} 
+                    onClick={handleProcessAudioClick} 
                     className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-8 py-4 rounded-2xl text-lg font-bold transition-all duration-300 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-105 hover:shadow-xl" 
                     disabled={!uploadedVideoId || isUploading}
                   >
@@ -2179,7 +2103,7 @@ Automatisch generiert von SnipX AI`
                   </button>
                   
                   {/* Debug test button for subtitle loading */}
-                  {process.env.NODE_ENV === 'development' && isAuthenticated && uploadedVideoId && (
+                  {import.meta.env.DEV && isAuthenticated && uploadedVideoId && (
                     <button 
                       onClick={async () => {
                         try {

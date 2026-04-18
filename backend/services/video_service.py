@@ -1967,6 +1967,10 @@ class VideoService:
             print(f"Warning: Could not initialize OpenAI client: {e}")
             self.openai_client = None
 
+        # Cache subtitle Whisper model to avoid costly reload on every request.
+        self._subtitle_whisper_model = None
+        self._subtitle_whisper_model_key = None
+
     def save_video(self, file, user_id):
         if not file:
             raise ValueError("No file provided")
@@ -3361,12 +3365,72 @@ class VideoService:
             
             print(f"[SUBTITLE DEBUG] Starting subtitle generation for video: {video.filepath}")
             print(f"[SUBTITLE DEBUG] Language: {language}, Style: {style}")
+
+            # Clear old subtitle pointers/files first so frontend polling does not pick stale subtitles.
+            old_subtitles = video.outputs.get("subtitles") if isinstance(video.outputs, dict) else None
+
+            def _resolve_existing_path(path_value):
+                if not path_value:
+                    return None
+                if os.path.isabs(path_value):
+                    return path_value
+                # Resolve against backend/app directory first, then cwd fallback.
+                app_base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                candidate = os.path.join(app_base, path_value)
+                if os.path.exists(candidate):
+                    return candidate
+                return os.path.abspath(path_value)
+
+            try:
+                if isinstance(old_subtitles, dict):
+                    for key in ("srt", "json"):
+                        old_path = _resolve_existing_path(old_subtitles.get(key))
+                        if old_path and os.path.exists(old_path):
+                            os.remove(old_path)
+                            print(f"[SUBTITLE DEBUG] Removed stale subtitle file: {old_path}")
+                elif isinstance(old_subtitles, str):
+                    old_path = _resolve_existing_path(old_subtitles)
+                    if old_path and os.path.exists(old_path):
+                        os.remove(old_path)
+                        print(f"[SUBTITLE DEBUG] Removed stale subtitle file: {old_path}")
+            except Exception as cleanup_err:
+                print(f"[SUBTITLE DEBUG] Stale subtitle cleanup warning: {cleanup_err}")
+
+            if isinstance(video.outputs, dict):
+                video.outputs["subtitles"] = None
+
+            # Persist subtitle reset immediately to avoid old subtitles being returned mid-process.
+            try:
+                if getattr(video, '_id', None):
+                    db_video_id = ObjectId(video._id) if isinstance(video._id, str) else video._id
+                    self.videos.update_one(
+                        {"_id": db_video_id},
+                        {"$set": {"outputs.subtitles": None}}
+                    )
+                    print("[SUBTITLE DEBUG] Cleared old subtitles in DB before regeneration")
+            except Exception as db_reset_err:
+                print(f"[SUBTITLE DEBUG] DB reset warning: {db_reset_err}")
             
             # Emit progress: Starting extraction
             if hasattr(video, 'id'):
                 self._emit_progress(str(video.id), 'extracting_audio', 45, 'Extracting audio from video...')
-            # Extract audio for transcription from the PROCESSED (cut) video
-            source_video_path = video.outputs.get("processed_video", video.filepath)
+            # Extract audio for transcription from processed video when available; otherwise use original.
+            processed_candidate = None
+            if isinstance(video.outputs, dict):
+                processed_candidate = _resolve_existing_path(video.outputs.get("processed_video"))
+            original_candidate = _resolve_existing_path(video.filepath)
+
+            if processed_candidate and os.path.exists(processed_candidate):
+                source_video_path = processed_candidate
+                print(f"[SUBTITLE DEBUG] Using processed video source: {source_video_path}")
+            elif original_candidate and os.path.exists(original_candidate):
+                source_video_path = original_candidate
+                print(f"[SUBTITLE DEBUG] Processed video unavailable; using original source: {source_video_path}")
+            else:
+                raise FileNotFoundError(
+                    f"No valid video source found for subtitles. processed={processed_candidate}, original={original_candidate}"
+                )
+
             clip = VideoFileClip(source_video_path)
             
             # Check if video has audio
@@ -3396,17 +3460,25 @@ class VideoService:
                 print(f"[SUBTITLE DEBUG] Starting Whisper transcription...")
                 print(f"[SUBTITLE DEBUG] Using OpenAI Whisper for transcription")
                 
-                # Use CPU-optimized model to avoid memory issues
-                # Base model is faster and more reliable than large models
-                model_size = "base"  # Use base model for reliability
-                device = "cpu"  # Force CPU to avoid GPU memory issues
+                # Configurable subtitle model/device with safe defaults.
+                model_size = os.getenv("SUBTITLE_WHISPER_MODEL", "base")
+                device = os.getenv("SUBTITLE_WHISPER_DEVICE", "cpu").strip().lower() or "cpu"
+                if device == "auto":
+                    device = get_device()
                 
                 print(f"[SUBTITLE DEBUG] Loading Whisper model: {model_size} on {device}")
                 print(f"[SUBTITLE DEBUG] Target language: {language}")
                 
-                # Load model
-                model = whisper.load_model(model_size, device=device)
-                print(f"[SUBTITLE DEBUG] Whisper model loaded successfully")
+                # Reuse loaded model when size/device are unchanged (large speed-up for short clips).
+                model_key = (model_size, device)
+                if self._subtitle_whisper_model is None or self._subtitle_whisper_model_key != model_key:
+                    self._subtitle_whisper_model = whisper.load_model(model_size, device=device)
+                    self._subtitle_whisper_model_key = model_key
+                    print(f"[SUBTITLE DEBUG] Whisper model loaded successfully")
+                else:
+                    print(f"[SUBTITLE DEBUG] Reusing cached Whisper model: {model_size} on {device}")
+
+                model = self._subtitle_whisper_model
                 
                 # Emit progress: Transcribing
                 if hasattr(video, 'id'):
@@ -3474,10 +3546,9 @@ class VideoService:
                 
                 print(f"[SUBTITLE DEBUG] Successfully processed {len(segments)} segments from Whisper")
                 
-                # CRITICAL: Detect hallucination/repetition in transcription
+                # Detect potential repetition but keep real transcription instead of replacing with demo text.
                 if self._is_transcription_repetitive(segments):
-                    print(f"[SUBTITLE WARNING] Detected repetitive/hallucinated transcription - rejecting bad output")
-                    raise ValueError("Transcription contains repetitive hallucinations - audio quality may be too poor")
+                    print(f"[SUBTITLE WARNING] Repetitive pattern detected; keeping real transcription output")
                 
                 # Emit progress: Creating subtitle files
                 if hasattr(video, 'id'):
@@ -3490,9 +3561,8 @@ class VideoService:
                 
             except ImportError as e:
                 print(f"[SUBTITLE ERROR] ❌ Whisper not available: {e}")
-                print(f"[SUBTITLE DEBUG] Falling back to demo text")
-                text = self._get_enhanced_sample_text(language, clip.duration)
-                srt_content, json_data = self._create_subtitles(text, language, style, clip.duration)
+                print(f"[SUBTITLE DEBUG] Demo fallback disabled; returning empty subtitles")
+                srt_content, json_data = self._create_empty_subtitles(language, style, reason="whisper_unavailable")
                 
             except Exception as e:
                 print(f"[SUBTITLE ERROR] ❌ Whisper transcription FAILED!")
@@ -3508,13 +3578,11 @@ class VideoService:
                     print(f"  - Poor audio quality or excessive background noise")
                     print(f"  - Very short or silent audio")
                     print(f"  - Audio preprocessing issues")
-                    print(f"[SUBTITLE ERROR] Falling back to demo subtitles - try improving audio quality")
+                    print(f"[SUBTITLE ERROR] Returning empty subtitles instead of demo text")
                 else:
-                    print(f"[SUBTITLE ERROR] ❌ Whisper failed - Falling back to demo text")
-                
-                # Enhanced fallback for Urdu
-                text = self._get_enhanced_sample_text(language, clip.duration)
-                srt_content, json_data = self._create_subtitles(text, language, style, clip.duration)
+                    print(f"[SUBTITLE ERROR] ❌ Whisper failed - returning empty subtitles")
+
+                srt_content, json_data = self._create_empty_subtitles(language, style, reason=str(e))
             
             # Save subtitles file with unique video ID to avoid collisions
             video_id = str(video.id) if hasattr(video, 'id') else os.path.basename(video.filepath).split('.')[0]
@@ -5033,14 +5101,25 @@ Respond in this exact JSON format:
         
         return srt_content, json_data
 
+    def _create_empty_subtitles(self, language, style, reason=None):
+        """Return an explicit empty subtitle payload (never demo text)."""
+        json_data = {
+            "language": language,
+            "segments": [],
+            "word_timestamps": True,
+            "confidence": 0.0,
+            "source": "empty",
+            "style": style,
+            "reason": reason
+        }
+        return "", json_data
+
     def _create_fallback_subtitles(self, video, options):
-        """Create fallback subtitles when transcription fails"""
+        """Create empty fallback subtitles when transcription fails."""
         language = options.get('subtitle_language', 'en')
         style = options.get('subtitle_style', 'clean')
-        
-        # Use enhanced fallback text
-        fallback_text = self._get_enhanced_sample_text(language, 15)
-        srt_content, json_data = self._create_subtitles(fallback_text, language, style, 15)
+
+        srt_content, json_data = self._create_empty_subtitles(language, style, reason="fallback")
         
         # Use unique video ID to avoid subtitle file collisions
         video_id = str(video.id) if hasattr(video, 'id') else os.path.basename(video.filepath).split('.')[0]

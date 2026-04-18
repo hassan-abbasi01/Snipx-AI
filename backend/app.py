@@ -1292,14 +1292,43 @@ def get_video_subtitles(user_id, video_id):
             return jsonify([]), 200
         
         json_path = subtitles_info.get('json')
-        if not json_path or not os.path.exists(json_path):
+        if not json_path:
             return jsonify([]), 200
+
+        # Resolve relative paths for container/deployment environments.
+        if not os.path.isabs(json_path):
+            json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), json_path)
+
+        if not os.path.exists(json_path):
+            # CWD fallback for legacy saved relative paths.
+            cwd_fallback = os.path.abspath(subtitles_info.get('json'))
+            if os.path.exists(cwd_fallback):
+                json_path = cwd_fallback
+            else:
+                return jsonify([]), 200
         
         import json
         with open(json_path, 'r', encoding='utf-8') as f:
             subtitle_data = json.load(f)
+
+        # Never return demo/fallback subtitle payloads to frontend.
+        source = (subtitle_data.get('source') or '').lower() if isinstance(subtitle_data, dict) else ''
+        segments = subtitle_data.get('segments', []) if isinstance(subtitle_data, dict) else []
+        demo_markers = (
+            'welcome to this video demonstration',
+            'example of english subtitles',
+            'generated automatically by snipx ai',
+        )
+        has_demo_text = any(
+            any(marker in str(seg.get('text', '')).lower() for marker in demo_markers)
+            for seg in segments if isinstance(seg, dict)
+        )
+
+        if source in {'fallback', 'sample', 'demo'} or has_demo_text:
+            logger.warning(f"Ignoring fallback/demo subtitles for video {video_id}")
+            return jsonify([]), 200
         
-        return jsonify(subtitle_data.get('segments', [])), 200
+        return jsonify(segments), 200
         
     except Exception as e:
         logger.error(f"Get subtitles error: {str(e)}")

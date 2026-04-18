@@ -29,7 +29,7 @@ const VideoPlayer = ({ videoUrl, videoId, subtitles, onTimeUpdate }: VideoPlayer
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [currentSubtitle, setCurrentSubtitle] = useState<SubtitleData | null>(null);
   const [loadedSubtitles, setLoadedSubtitles] = useState<SubtitleData[]>([]);
-  const controlsTimeoutRef = useRef<NodeJS.Timeout>();
+  const controlsTimeoutRef = useRef<number | null>(null);
 
   // Load subtitles when videoId or provided subtitles change
   useEffect(() => {
@@ -235,7 +235,7 @@ const VideoPlayer = ({ videoUrl, videoId, subtitles, onTimeUpdate }: VideoPlayer
       )}
 
       {/* Debug Subtitle Info */}
-      {process.env.NODE_ENV === 'development' && (
+      {import.meta.env.DEV && (
         <div className="absolute top-4 right-4 bg-black bg-opacity-75 text-white p-3 rounded-lg text-xs max-w-xs z-50">
           <div>📺 Subtitles: {loadedSubtitles.length} loaded</div>
           <div>⏰ Time: {currentTime.toFixed(2)}s</div>
@@ -244,22 +244,6 @@ const VideoPlayer = ({ videoUrl, videoId, subtitles, onTimeUpdate }: VideoPlayer
           {loadedSubtitles.length > 0 && !showSubtitles && (
             <div className="text-yellow-400 mt-1">⚠️ Click CC to show subtitles</div>
           )}
-        </div>
-      )}
-
-      {/* Force Show Subtitles Button (Debug) */}
-      {loadedSubtitles.length > 0 && process.env.NODE_ENV === 'development' && (
-        <div className="absolute top-4 left-4 z-40">
-          <button
-            onClick={() => {
-              // Force show first subtitle for testing
-              setCurrentSubtitle(loadedSubtitles[0]);
-              console.log('[VideoPlayer] 🧪 Force showing first subtitle:', loadedSubtitles[0]);
-            }}
-            className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-xs"
-          >
-            🧪 Test Subtitle
-          </button>
         </div>
       )}
 
