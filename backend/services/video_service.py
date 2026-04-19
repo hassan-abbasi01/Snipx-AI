@@ -831,6 +831,12 @@ class AudioEnhancer:
         if normalized in single_word_fillers:
             return normalized
 
+        # Compress long repeated letters (e.g., "uhhhh" -> "uhh", "ummmm" -> "umm")
+        # and retry direct vocab check.
+        squashed = re.sub(r"(.)\1{2,}", r"\1\1", normalized)
+        if squashed in single_word_fillers:
+            return squashed
+
         # Heuristics for elongated disfluencies: uhh/uhhh, umm/ummm, err/errr, hmm/hmmm
         # Keep bounded length to avoid false positives from long real words.
         if len(normalized) <= 12:
@@ -3096,6 +3102,10 @@ class VideoService:
 
         for word in words:
             if not isinstance(word, dict):
+                continue
+
+            # Skip words already removed in an earlier cut pass.
+            if bool(word.get('is_removed', False)):
                 continue
 
             is_target = bool(word.get('is_filler', False)) or (include_repeated and bool(word.get('is_repeated', False)))
@@ -5697,14 +5707,23 @@ Respond in this exact JSON format:
                     continue
 
                 overlaps_cut = any(not (w_end <= cut_start or w_start >= cut_end) for cut_start, cut_end in cuts_in_seconds)
-                if overlaps_cut:
-                    removed_words += 1
-                    continue
-
                 shifted_start = round(_shift_time(w_start), 3)
                 shifted_end = round(max(_shift_time(w_end), shifted_start), 3)
 
+                # Keep removed words in transcript as marked fillers so frontend highlights remain visible.
+                # They are excluded from future cut-segment building via is_removed flag.
                 updated_word = dict(word)
+                if overlaps_cut:
+                    removed_words += 1
+                    updated_word['is_filler'] = True
+                    updated_word['is_removed'] = True
+
+                    # Prevent zero-length timestamps for removed words.
+                    min_removed_duration = 0.02
+                    shifted_end = round(max(shifted_end, shifted_start + min_removed_duration), 3)
+                else:
+                    updated_word['is_removed'] = bool(updated_word.get('is_removed', False))
+
                 updated_word['start'] = shifted_start
                 updated_word['end'] = shifted_end
                 adjusted_words.append(updated_word)

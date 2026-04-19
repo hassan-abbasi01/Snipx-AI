@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { toast } from 'react-hot-toast';
 
 interface TranscriptWord {
   text: string;
@@ -50,9 +49,11 @@ const TranscriptViewer: React.FC<TranscriptViewerProps> = ({ videoId, onSeek, on
       setError(null);
 
       const token = localStorage.getItem('token');
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001';
-      const response = await fetch(
-        `${apiUrl}/videos/${videoId}/transcript`,
+      const rawApiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5001').replace(/\/$/, '');
+      const apiBase = rawApiUrl.endsWith('/api') ? rawApiUrl : `${rawApiUrl}/api`;
+
+      let response = await fetch(
+        `${apiBase}/videos/${videoId}/transcript`,
         {
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -61,6 +62,20 @@ const TranscriptViewer: React.FC<TranscriptViewerProps> = ({ videoId, onSeek, on
           }
         }
       );
+
+      // Backward compatibility for environments where VITE_API_URL already includes custom path rewrites.
+      if (response.status === 404) {
+        response = await fetch(
+          `${rawApiUrl}/videos/${videoId}/transcript`,
+          {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'ngrok-skip-browser-warning': 'true',
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+      }
 
       if (!response.ok) {
         const contentType = response.headers.get('content-type');
