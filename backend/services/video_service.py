@@ -899,7 +899,7 @@ class AudioEnhancer:
             noise_reduction = options.get('noise_reduction', 'none')  # Default to 'none' - user controls it
             
             detect_and_remove_fillers = options.get('detect_and_remove_fillers', options.get('remove_fillers', False))  # NEW: Separate filler removal option
-            detect_repeated_words = options.get('detect_repeated_words', True)  # NEW: Detect repeated words
+            detect_repeated_words = options.get('detect_repeated_words', False)  # Keep conservative by default
             
             # NEW: Get custom filler words from options
             custom_filler_words = options.get('custom_filler_words', [])
@@ -2154,6 +2154,17 @@ class VideoService:
             return self._to_bson_safe(value.tolist())
         return value
 
+    def _is_sound_filler_token(self, token_text):
+        """Return True only for hesitation sound fillers (uh/umm/ahh/hmm/etc), never lexical phrases."""
+        core_fillers = {
+            'um', 'uh', 'uhm', 'umm', 'erm', 'er', 'ah', 'hmm', 'hm', 'mm', 'mmm', 'mhm', 'huh', 'agh',
+            'uhh', 'err', 'mmhmm', 'uhhuh'
+        }
+        normalized = AudioEnhancer._normalize_token(str(token_text or ''))
+        if not normalized:
+            return False
+        return AudioEnhancer._match_filler(normalized, core_fillers) is not None
+
     def _apply_detected_fillers_to_transcript(self, transcript, filler_segments):
         """Mark transcript words as fillers when they overlap detected filler time segments."""
         if not isinstance(transcript, dict):
@@ -2214,8 +2225,10 @@ class VideoService:
 
             updated_word = dict(word)
             if overlaps and not bool(updated_word.get('is_filler', False)):
-                updated_word['is_filler'] = True
-                marked_count += 1
+                candidate_text = updated_word.get('text', '')
+                if self._is_sound_filler_token(candidate_text):
+                    updated_word['is_filler'] = True
+                    marked_count += 1
 
             updated_words.append(updated_word)
 
@@ -2241,7 +2254,11 @@ class VideoService:
 
                 if best_idx >= 0 and best_distance is not None and best_distance <= 260:
                     best_word = updated_words[best_idx]
-                    if isinstance(best_word, dict) and not bool(best_word.get('is_filler', False)):
+                    if (
+                        isinstance(best_word, dict)
+                        and not bool(best_word.get('is_filler', False))
+                        and self._is_sound_filler_token(best_word.get('text', ''))
+                    ):
                         best_word['is_filler'] = True
                         marked_count += 1
 
@@ -3151,7 +3168,13 @@ class VideoService:
             if bool(word.get('is_removed', False)):
                 continue
 
-            is_target = bool(word.get('is_filler', False)) or (include_repeated and bool(word.get('is_repeated', False)))
+            word_text = str(word.get('text', '') or '').lower().strip()
+            is_sound_filler = self._is_sound_filler_token(word_text)
+
+            is_target = (
+                (bool(word.get('is_filler', False)) and is_sound_filler)
+                or (include_repeated and bool(word.get('is_repeated', False)))
+            )
             if not is_target:
                 continue
 
@@ -3161,7 +3184,6 @@ class VideoService:
             except Exception:
                 continue
 
-            word_text = str(word.get('text', '') or '').lower().strip()
             word_norm = re.sub(r"[^a-z0-9]+", "", word_text)
             is_core_filler = word_norm in core_fillers
 
@@ -3188,6 +3210,9 @@ class VideoService:
                 except Exception:
                     continue
                 if end_s <= start_s:
+                    continue
+
+                if not self._is_sound_filler_token(fw.get('word', '')):
                     continue
 
                 start_ms = max(0, int(round(start_s * 1000)) - int(min(base_pre, 6)))

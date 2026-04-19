@@ -126,7 +126,7 @@ const Features = () => {
   const [pauseThreshold] = useState<number>(500);
   const [fillerWordsLevel, setFillerWordsLevel] = useState<string>('medium');
   const [removeFillers, setRemoveFillers] = useState<boolean>(true);
-  const [detectRepeatedWords, setDetectRepeatedWords] = useState<boolean>(true);
+  const [detectRepeatedWords, setDetectRepeatedWords] = useState<boolean>(false);
   const [removeFillersFromVideo, setRemoveFillersFromVideo] = useState<boolean>(true);
   const [customFillerWords, setCustomFillerWords] = useState<string[]>(['', '', '', '', '']);
   const [useCustomFillers, setUseCustomFillers] = useState<boolean>(false);
