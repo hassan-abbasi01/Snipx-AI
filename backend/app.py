@@ -6,6 +6,7 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 from authlib.integrations.flask_client import OAuth
 from datetime import datetime
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 import logging
 import os
@@ -157,13 +158,44 @@ oauth.register(
 )
 
 
+def _resolve_backend_public_url() -> str:
+    """Resolve externally reachable backend URL (RunPod/ngrok/proxy-safe)."""
+    backend_url = (os.getenv('BACKEND_URL') or '').strip().rstrip('/')
+    if backend_url:
+        return backend_url
+
+    forwarded_host = (request.headers.get('X-Forwarded-Host') or request.host or '').split(',')[0].strip()
+    forwarded_proto = (request.headers.get('X-Forwarded-Proto') or request.scheme or 'https').split(',')[0].strip()
+    if forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}".rstrip('/')
+
+    return request.host_url.rstrip('/')
+
+
+def _resolve_frontend_public_url() -> str:
+    """Resolve frontend URL for OAuth callback when FRONTEND_URL is not explicitly configured."""
+    frontend_url = (os.getenv('FRONTEND_URL') or '').strip().rstrip('/')
+    if frontend_url:
+        return frontend_url
+
+    origin = (request.headers.get('Origin') or '').strip().rstrip('/')
+    if origin:
+        return origin
+
+    referer = (request.headers.get('Referer') or '').strip()
+    if referer:
+        parsed = urlparse(referer)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}".rstrip('/')
+
+    return 'http://localhost:5173'
+
+
 
 @app.route('/api/auth/google/login')
 def google_login():
-    # Prefer explicit backend URL in deployment; fallback to incoming host.
-    backend_url = os.getenv('BACKEND_URL', request.host_url.rstrip('/'))
-    if backend_url.startswith('http://') and ('ngrok' in backend_url or 'runpod' in backend_url):
-        backend_url = backend_url.replace('http://', 'https://')
+    # Prefer env URL, else derive proxy/public URL from forwarded headers.
+    backend_url = _resolve_backend_public_url()
 
     redirect_uri = f"{backend_url}/api/auth/google/callback"
     logger.info(f"[OAUTH] Google login redirect URI: {redirect_uri}")
@@ -190,7 +222,7 @@ def google_callback():
     jwt_token = auth_service.generate_token(user_id)
 
     # Redirect to configured frontend URL for local/prod environments.
-    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+    frontend_url = _resolve_frontend_public_url()
     logger.info(f"[OAUTH] Redirecting to frontend: {frontend_url}")
     return redirect(f"{frontend_url}/auth/callback?token={jwt_token}")
 

@@ -1159,7 +1159,7 @@ class AudioEnhancer:
                 else:
                     # ONLY true filler sounds - never remove real words like 'so', 'well', 'right', 'i think'
                     if enhancement_type == 'conservative':
-                        target_fillers = ['um', 'uh', 'er']
+                        target_fillers = ['um', 'uh', 'er', 'uhm', 'umm', 'uhh']
                     elif enhancement_type == 'medium':
                         target_fillers = ['um', 'uh', 'er', 'ah', 'uhm', 'erm', 'umm', 'uhh', 'err',
                                         'hmm', 'mm', 'hm', 'mmm', 'mhm']
@@ -1176,6 +1176,24 @@ class AudioEnhancer:
                     detect_repeated=detect_repeated,
                     enable_gap_filler_detection=enable_gap_filler_detection,
                 )
+
+                # Expand each detected segment slightly so hesitation tails (uhhh/ummm) are fully removed.
+                if filler_segments:
+                    pad_map = {
+                        'conservative': (10, 55),
+                        'medium': (20, 85),
+                        'aggressive': (30, 120),
+                    }
+                    pre_pad, post_pad = pad_map.get(enhancement_type, (20, 85))
+                    audio_len_ms = len(audio)
+                    expanded_segments = []
+                    for start_ms, end_ms in filler_segments:
+                        expanded_start = max(0, int(start_ms) - pre_pad)
+                        expanded_end = min(audio_len_ms, int(end_ms) + post_pad)
+                        if expanded_end > expanded_start:
+                            expanded_segments.append((expanded_start, expanded_end))
+                    filler_segments = self._merge_overlapping_segments(expanded_segments)
+                    print(f"[FILLER] Expanded segments with pad pre={pre_pad}ms post={post_pad}ms")
 
                 # Store segments for video cutting
                 self._detected_filler_segments = filler_segments
@@ -1259,6 +1277,49 @@ class AudioEnhancer:
             
             filler_segments = []
             all_words = []  # Store all words with timestamps for repeated word detection
+
+            def _extract_segment_fallback_words(result_obj):
+                """Fallback when word-level timestamps are missing from whisper result."""
+                extracted = []
+                for seg in result_obj.get('segments', []):
+                    seg_text = str(seg.get('text', '') or '').strip()
+                    if not seg_text:
+                        continue
+
+                    seg_start = float(seg.get('start', 0) or 0)
+                    seg_end = float(seg.get('end', seg_start) or seg_start)
+                    if seg_end < seg_start:
+                        seg_end = seg_start
+
+                    raw_tokens = [tok for tok in re.findall(r"\S+", seg_text) if str(tok).strip()]
+                    normalized_tokens = []
+                    for tok in raw_tokens:
+                        token_norm = self._normalize_token(tok)
+                        if token_norm:
+                            normalized_tokens.append((tok, token_norm))
+
+                    if not normalized_tokens:
+                        continue
+
+                    seg_duration = max(seg_end - seg_start, 0.0)
+                    token_count = len(normalized_tokens)
+                    token_duration = (seg_duration / token_count) if seg_duration > 0 else 0.01
+
+                    for idx, (raw_token, token_norm) in enumerate(normalized_tokens):
+                        word_start = seg_start + (idx * token_duration)
+                        if seg_duration > 0:
+                            word_end = seg_start + ((idx + 1) * token_duration)
+                        else:
+                            word_end = word_start + 0.01
+
+                        extracted.append({
+                            'text': token_norm,
+                            'original': str(raw_token).strip(),
+                            'start': word_start,
+                            'end': word_end,
+                        })
+
+                return extracted
             
             # Collect all words from all segments with timestamps
             for segment in result.get('segments', []):
@@ -1283,6 +1344,12 @@ class AudioEnhancer:
                             'start': word_info.get('start', 0),
                             'end': word_info.get('end', 0),
                         })
+
+            if not all_words and result.get('segments'):
+                print("[WHISPER] Word-level timestamps missing, using segment fallback tokenization")
+                all_words = _extract_segment_fallback_words(result)
+                if all_words:
+                    print(f"[WHISPER] Segment fallback generated {len(all_words)} pseudo-words")
             
             print(f"[WHISPER] Extracted {len(all_words)} words with timestamps")
             
