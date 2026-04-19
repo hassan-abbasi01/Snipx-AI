@@ -2167,12 +2167,26 @@ class VideoService:
         if not normalized_segments:
             return transcript, 0
 
+        # Detection and transcript timestamps are often off by a small margin on noisy speech.
+        # Expand segments slightly for highlight mapping only (not for cutting).
+        expanded_segments = []
+        for seg_start, seg_end in normalized_segments:
+            expanded_start = max(0, int(seg_start) - 60)
+            expanded_end = int(seg_end) + 120
+            if expanded_end > expanded_start:
+                expanded_segments.append((expanded_start, expanded_end))
+
+        if not expanded_segments:
+            expanded_segments = normalized_segments
+
         updated_words = []
         marked_count = 0
+        word_centers = []
 
         for word in words:
             if not isinstance(word, dict):
                 updated_words.append(word)
+                word_centers.append(None)
                 continue
 
             try:
@@ -2180,18 +2194,21 @@ class VideoService:
                 end_ms = int(round(float(word.get('end', word.get('start', 0.0))) * 1000))
             except Exception:
                 updated_words.append(word)
+                word_centers.append(None)
                 continue
 
             if end_ms <= start_ms:
                 end_ms = start_ms + 1
 
             word_duration = max(1, end_ms - start_ms)
-            overlap_needed = max(35, int(word_duration * 0.35))
+            overlap_needed = max(12, int(word_duration * 0.18))
             overlaps = False
+            center_ms = int((start_ms + end_ms) / 2)
+            word_centers.append(center_ms)
 
-            for seg_start, seg_end in normalized_segments:
+            for seg_start, seg_end in expanded_segments:
                 overlap_ms = max(0, min(end_ms, seg_end) - max(start_ms, seg_start))
-                if overlap_ms >= overlap_needed:
+                if overlap_ms >= overlap_needed or (seg_start <= center_ms <= seg_end):
                     overlaps = True
                     break
 
@@ -2201,6 +2218,32 @@ class VideoService:
                 marked_count += 1
 
             updated_words.append(updated_word)
+
+        # Fallback: if mapping still marks only one/zero word but multiple filler segments exist,
+        # attach each segment to the nearest transcript word center.
+        if marked_count <= 1 and len(expanded_segments) >= 2 and len(updated_words) >= 2:
+            for seg_start, seg_end in expanded_segments:
+                seg_center = int((seg_start + seg_end) / 2)
+                best_idx = -1
+                best_distance = None
+
+                for idx, center_ms in enumerate(word_centers):
+                    if center_ms is None:
+                        continue
+                    word_obj = updated_words[idx] if idx < len(updated_words) else None
+                    if not isinstance(word_obj, dict) or bool(word_obj.get('is_filler', False)):
+                        continue
+
+                    distance = abs(center_ms - seg_center)
+                    if best_distance is None or distance < best_distance:
+                        best_distance = distance
+                        best_idx = idx
+
+                if best_idx >= 0 and best_distance is not None and best_distance <= 260:
+                    best_word = updated_words[best_idx]
+                    if isinstance(best_word, dict) and not bool(best_word.get('is_filler', False)):
+                        best_word['is_filler'] = True
+                        marked_count += 1
 
         if marked_count == 0:
             return transcript, 0
