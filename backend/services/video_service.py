@@ -1186,11 +1186,11 @@ class AudioEnhancer:
                 # Expand each detected segment slightly so hesitation tails (uhhh/ummm) are fully removed.
                 if filler_segments:
                     pad_map = {
-                        'conservative': (10, 55),
-                        'medium': (20, 85),
-                        'aggressive': (30, 120),
+                        'conservative': (8, 40),
+                        'medium': (12, 55),
+                        'aggressive': (18, 75),
                     }
-                    pre_pad, post_pad = pad_map.get(enhancement_type, (20, 85))
+                    pre_pad, post_pad = pad_map.get(enhancement_type, (12, 55))
                     audio_len_ms = len(audio)
                     expanded_segments = []
                     for start_ms, end_ms in filler_segments:
@@ -1371,6 +1371,15 @@ class AudioEnhancer:
                 if matched:
                     start_ms = int(word_info['start'] * 1000)
                     end_ms = int(word_info['end'] * 1000)
+
+                    # Whisper may return overly wide timestamps for short hesitation sounds.
+                    # Clamp long windows to keep removal focused around the filler token.
+                    duration_ms = max(1, end_ms - start_ms)
+                    if duration_ms > 620:
+                        center_ms = int((start_ms + end_ms) / 2)
+                        half_window = 220
+                        start_ms = max(0, center_ms - half_window)
+                        end_ms = center_ms + half_window
 
                     filler_segments.append((start_ms, end_ms, f"filler: {word_info['original']}"))
                     print(f"[WHISPER] Found filler '{word_info['original']}' at {start_ms}ms - {end_ms}ms")
@@ -2232,39 +2241,16 @@ class VideoService:
 
             updated_words.append(updated_word)
 
-        # Fallback: if mapping under-detects while multiple segments exist,
-        # attach each segment to the nearest transcript word center.
-        if marked_count <= 1 and len(expanded_segments) >= 2 and len(updated_words) >= 2:
-            under_detected = marked_count < len(expanded_segments)
-            for seg_start, seg_end in expanded_segments:
-                seg_center = int((seg_start + seg_end) / 2)
-                best_idx = -1
-                best_distance = None
-
-                for idx, center_ms in enumerate(word_centers):
-                    if center_ms is None:
-                        continue
-                    word_obj = updated_words[idx] if idx < len(updated_words) else None
-                    if not isinstance(word_obj, dict) or bool(word_obj.get('is_filler', False)):
-                        continue
-
-                    distance = abs(center_ms - seg_center)
-                    if best_distance is None or distance < best_distance:
-                        best_distance = distance
-                        best_idx = idx
-
-                max_attach_distance = 420 if under_detected else 260
-                if best_idx >= 0 and best_distance is not None and best_distance <= max_attach_distance:
-                    best_word = updated_words[best_idx]
-                    if isinstance(best_word, dict) and not bool(best_word.get('is_filler', False)):
-                        token_is_sound = self._is_sound_filler_token(best_word.get('text', ''))
-                        # In under-detected mode, allow timing-based fallback marks
-                        # so frontend shows all detected filler regions.
-                        if token_is_sound or under_detected:
-                            best_word['is_filler'] = True
-                            if under_detected and not token_is_sound:
-                                best_word['is_timing_filler'] = True
-                            marked_count += 1
+        # Safety pass: always mark explicit lexical sound-fillers in transcript text.
+        # This avoids missing "uhm/uh/ah" while preventing timing-only false positives.
+        for idx, word in enumerate(updated_words):
+            if not isinstance(word, dict):
+                continue
+            if bool(word.get('is_filler', False)):
+                continue
+            if self._is_sound_filler_token(word.get('text', '')):
+                word['is_filler'] = True
+                marked_count += 1
 
         if marked_count == 0:
             return transcript, 0
