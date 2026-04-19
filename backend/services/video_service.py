@@ -1498,16 +1498,16 @@ class AudioEnhancer:
 
             # Best effort order (keep it FAST by default):
             # 1) whisper-timestamped without VAD (fast)
-            # 2) whisper-timestamped without disfluency detection
-            # 3) Plain Whisper text-only fallback
+            # 2) whisper-timestamped with VAD (more robust on noisy/short clips)
+            # 3) Plain Whisper fallback
             try:
                 result = _run_ts(vad=False, detect_disfluencies=False, initial_prompt=transcript_prompt, no_speech_threshold=0.6)
             except Exception as e_no_vad:
-                print(f"[TRANSCRIPT] whisper-timestamped failed: {e_no_vad}; retrying detect_disfluencies=False")
+                print(f"[TRANSCRIPT] whisper-timestamped failed: {e_no_vad}; retrying with VAD enabled")
                 try:
-                    result = _run_ts(vad=False, detect_disfluencies=False, initial_prompt=transcript_prompt, no_speech_threshold=0.6)
+                    result = _run_ts(vad=True, detect_disfluencies=False, initial_prompt=transcript_prompt, no_speech_threshold=0.7)
                 except Exception as e_ts:
-                    print(f"[TRANSCRIPT] whisper-timestamped retry failed: {e_ts}, falling back to plain Whisper (text-only)...")
+                    print(f"[TRANSCRIPT] whisper-timestamped retry failed: {e_ts}, falling back to plain Whisper...")
                     result = model.transcribe(
                         audio_path,
                         language=None,
@@ -1515,6 +1515,7 @@ class AudioEnhancer:
                         initial_prompt=transcript_prompt,
                         no_speech_threshold=0.6,
                         condition_on_previous_text=False,
+                        word_timestamps=True,
                         suppress_tokens=[]
                     )
             
@@ -4656,6 +4657,21 @@ class VideoService:
             print("\n[STEP 4/4] Creating condensed video...")
             self._emit_progress(str(video._id), 'summarizing', 75, 'Generating condensed video...')
             condensed_path = self._create_condensed_video(clip, final_segments, video.filepath)
+
+            # Step 4.5: Transcribe condensed output so text summary matches the shortened video.
+            condensed_transcript_data = {'segments': [], 'text': ''}
+            if condensed_path and os.path.exists(condensed_path):
+                print("\n[STEP 4.5/5] Transcribing condensed video for summary alignment...")
+                self._emit_progress(str(video._id), 'summarizing', 80, 'Transcribing summarized video...')
+                condensed_clip = None
+                try:
+                    condensed_clip = VideoFileClip(condensed_path)
+                    condensed_transcript_data = self._transcribe_for_summary(condensed_clip)
+                except Exception as condensed_tx_err:
+                    print(f"[SUMMARIZE] Condensed transcription failed: {condensed_tx_err}")
+                finally:
+                    if condensed_clip:
+                        condensed_clip.close()
             
             # Generate text summary
             text_summary = self._generate_text_summary(transcript_data, final_segments, duration)
@@ -4690,22 +4706,22 @@ class VideoService:
             ai_summary_text = ''
             ai_key_points = []
             
-            # Build transcript from ONLY what's in the condensed video
-            # Method 1: Get text directly from speech segments
-            segment_texts = [seg.get('text', '').strip() for seg in final_segments if seg.get('text', '').strip()]
-            
-            # Method 2: For visual-only segments, find any transcript words that fall within their time range
-            all_whisper_segments = transcript_data.get('segments', []) if transcript_data else []
-            for fseg in final_segments:
-                if fseg.get('text', '').strip():
-                    continue  # Already have text for this segment
-                # Find whisper segments that overlap with this visual segment's time range
-                for wseg in all_whisper_segments:
-                    # Check if whisper segment overlaps with final segment time range
-                    if wseg['end'] > fseg['start'] and wseg['start'] < fseg['end']:
-                        text = wseg.get('text', '').strip()
-                        if text and text not in segment_texts:
-                            segment_texts.append(text)
+            # Build transcript from ONLY what's in the condensed video.
+            direct_condensed_text = (condensed_transcript_data.get('text', '') or '').strip()
+            if direct_condensed_text:
+                segment_texts = [direct_condensed_text]
+            else:
+                # Fallback: use text attached to selected segments + overlaps from original transcript.
+                segment_texts = [seg.get('text', '').strip() for seg in final_segments if seg.get('text', '').strip()]
+                all_whisper_segments = transcript_data.get('segments', []) if transcript_data else []
+                for fseg in final_segments:
+                    if fseg.get('text', '').strip():
+                        continue
+                    for wseg in all_whisper_segments:
+                        if wseg['end'] > fseg['start'] and wseg['start'] < fseg['end']:
+                            text = wseg.get('text', '').strip()
+                            if text and text not in segment_texts:
+                                segment_texts.append(text)
             
             condensed_transcript = ' '.join(segment_texts)
             full_transcript = transcript_data.get('text', '') if transcript_data else ''
@@ -4719,7 +4735,10 @@ class VideoService:
             
             # Check if transcription was a hallucination
             hallucination_detected = False
-            if transcript_data and transcript_data.get('hallucination_detected'):
+            if condensed_transcript_data and condensed_transcript_data.get('hallucination_detected'):
+                hallucination_detected = True
+                print(f"[SUMMARIZE] Condensed-video transcription flagged as hallucinated")
+            elif transcript_data and transcript_data.get('hallucination_detected'):
                 hallucination_detected = True
                 print(f"[SUMMARIZE] Whisper hallucination was detected during transcription")
             
@@ -4795,7 +4814,7 @@ class VideoService:
                 'compression_ratio': round(len(ai_summary_text) / max(len(working_transcript), 1) * 100, 1),
                 'video_duration': round(duration, 1),
                 'condensed_duration': round(sum(seg['duration'] for seg in final_segments), 1),
-                'source': 'condensed_segments' if condensed_transcript else 'full_transcript'
+                'source': 'condensed_video_transcript' if direct_condensed_text else ('condensed_segments' if condensed_transcript else 'video_analysis')
             }
             
             ai_summary_path = f"{os.path.splitext(video.filepath)[0]}_ai_summary.json"
@@ -4905,9 +4924,10 @@ class VideoService:
     
     def _transcribe_for_summary(self, clip):
         """Transcribe audio to understand speech content (auto-detects language)"""
+        audio_path = None
         try:
-            if not WHISPER_TS_AVAILABLE:
-                print("[TRANSCRIPTION] Whisper not available, skipping")
+            if clip.audio is None:
+                print("[TRANSCRIPTION] No audio track available for summary transcription")
                 return {'segments': [], 'text': ''}
             
             # Extract audio to temporary file
@@ -4915,18 +4935,33 @@ class VideoService:
             clip.audio.write_audiofile(audio_path, verbose=False, logger=None)
             
             print("[TRANSCRIPTION] Running Whisper (base model, auto-detect language)...")
-            
-            # Use base model for better multilingual support (tiny is weak on non-English)
-            model = whisper_ts.load_model("base", device=get_device())
-            # language=None lets Whisper auto-detect (supports Urdu, Arabic, Hindi, etc.)
-            result = whisper_ts.transcribe(model, audio_path, language=None)
+
+            result = None
+            if WHISPER_TS_AVAILABLE:
+                try:
+                    model = whisper_ts.load_model("base", device=get_device())
+                    # language=None lets Whisper auto-detect (supports Urdu, Arabic, Hindi, etc.)
+                    result = whisper_ts.transcribe(model, audio_path, language=None)
+                except Exception as ts_err:
+                    print(f"[TRANSCRIPTION] whisper-timestamped failed for summary: {ts_err}")
+
+            if result is None:
+                if not WHISPER_AVAILABLE:
+                    print("[TRANSCRIPTION] No Whisper backend available for summary")
+                    return {'segments': [], 'text': ''}
+                model = whisper.load_model("base", device=get_device())
+                result = model.transcribe(
+                    audio_path,
+                    language=None,
+                    verbose=False,
+                    fp16=False,
+                    word_timestamps=True,
+                    condition_on_previous_text=False,
+                    no_speech_threshold=0.6,
+                )
             
             detected_lang = result.get('language', 'unknown')
             print(f"[TRANSCRIPTION] Detected language: {detected_lang}")
-            
-            # Clean up
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
             
             transcript_text = result.get('text', '')
             print(f"[TRANSCRIPTION] Found {len(result.get('segments', []))} speech segments, {len(transcript_text)} chars")
@@ -4948,6 +4983,12 @@ class VideoService:
         except Exception as e:
             print(f"[TRANSCRIPTION] Error: {e}")
             return {'segments': [], 'text': ''}
+        finally:
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
     
     def _select_final_segments(self, key_segments, transcript_data, duration, summary_length):
         """Select final segments based on visual and audio analysis"""
