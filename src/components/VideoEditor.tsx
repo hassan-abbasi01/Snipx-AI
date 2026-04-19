@@ -27,6 +27,11 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [videoId, setVideoId] = useState<string | null>(null);
+  const [originalPreviewUrl, setOriginalPreviewUrl] = useState<string | null>(null);
+  const [originalVideoId, setOriginalVideoId] = useState<string | null>(null);
+  const [dubbedPreviewUrl, setDubbedPreviewUrl] = useState<string | null>(null);
+  const [dubbedVideoId, setDubbedVideoId] = useState<string | null>(null);
+  const [audioPreviewMode, setAudioPreviewMode] = useState<'original' | 'dubbed'>('original');
   const [mergeFile, setMergeFile] = useState<File | null>(null);
   const [mergeVideoId, setMergeVideoId] = useState<string | null>(null);
   const [mergePosition, setMergePosition] = useState<'before' | 'after'>('after');
@@ -67,6 +72,23 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const objectUrlsRef = useRef<Set<string>>(new Set());
+
+  const trackObjectUrl = (url: string) => {
+    if (url.startsWith('blob:')) {
+      objectUrlsRef.current.add(url);
+    }
+  };
+
+  const releaseObjectUrl = (url: string | null) => {
+    if (!url || !url.startsWith('blob:')) {
+      return;
+    }
+    if (objectUrlsRef.current.has(url)) {
+      objectUrlsRef.current.delete(url);
+    }
+    URL.revokeObjectURL(url);
+  };
 
   const firstTrimDurationSec = Math.max(0, segment1EndSec - segment1StartSec);
   const secondTrimDurationSec = Math.max(0, segment2EndSec - segment2StartSec);
@@ -162,7 +184,13 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
       
       // Create object URL for preview
       const objectUrl = URL.createObjectURL(file);
+      trackObjectUrl(objectUrl);
       setPreviewUrl(objectUrl);
+      setOriginalPreviewUrl(objectUrl);
+      setDubbedPreviewUrl(null);
+      setOriginalVideoId(null);
+      setDubbedVideoId(null);
+      setAudioPreviewMode('original');
       
       // Upload the file to backend
       await uploadFile(file);
@@ -177,7 +205,13 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
       
       // Create object URL for preview
       const objectUrl = URL.createObjectURL(file);
+      trackObjectUrl(objectUrl);
       setPreviewUrl(objectUrl);
+      setOriginalPreviewUrl(objectUrl);
+      setDubbedPreviewUrl(null);
+      setOriginalVideoId(null);
+      setDubbedVideoId(null);
+      setAudioPreviewMode('original');
       
       // Upload the file to backend
       await uploadFile(file);
@@ -199,6 +233,7 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
       
       console.log('Upload response:', response);
       setVideoId(response.video_id);
+      setOriginalVideoId(response.video_id);
       toast.success('Video uploaded successfully!');
       
     } catch (error) {
@@ -477,6 +512,9 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
 
     setIsDubbing(true);
     try {
+      const sourcePreviewBeforeDubbing = previewUrl;
+      const sourceVideoIdBeforeDubbing = videoId;
+
       const dubbingResult = await ApiService.dubVideo(videoId, {
         targetLanguage: targetDubbingLanguage,
         sourceLanguage: sourceDubbingLanguage === 'auto' ? undefined : sourceDubbingLanguage,
@@ -486,6 +524,16 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
       const dubbedVideoId = dubbingResult.video_id;
       const dubbedBlob = await ApiService.downloadVideo(dubbedVideoId);
       const dubbedUrl = URL.createObjectURL(dubbedBlob);
+      trackObjectUrl(dubbedUrl);
+
+      if (sourcePreviewBeforeDubbing) {
+        setOriginalPreviewUrl(sourcePreviewBeforeDubbing);
+      }
+      setOriginalVideoId(sourceVideoIdBeforeDubbing);
+      releaseObjectUrl(dubbedPreviewUrl);
+      setDubbedPreviewUrl(dubbedUrl);
+      setDubbedVideoId(dubbedVideoId);
+      setAudioPreviewMode('dubbed');
 
       setPreviewUrl(dubbedUrl);
       setVideoId(dubbedVideoId);
@@ -649,9 +697,16 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
       const mergeResult = await ApiService.mergeVideos(orderedIds);
       const mergedBlob = await ApiService.downloadVideo(mergeResult.video_id);
       const mergedUrl = URL.createObjectURL(mergedBlob);
+      trackObjectUrl(mergedUrl);
 
       setPreviewUrl(mergedUrl);
       setVideoId(mergeResult.video_id);
+      setOriginalPreviewUrl(mergedUrl);
+      setOriginalVideoId(mergeResult.video_id);
+      releaseObjectUrl(dubbedPreviewUrl);
+      setDubbedPreviewUrl(null);
+      setDubbedVideoId(null);
+      setAudioPreviewMode('original');
       setProcessedVideoData(mergeResult);
       setSelectedFile(new File([mergedBlob], mergeResult.filename || 'merged_video.mp4', { type: 'video/mp4' }));
       setUploadProgress(100);
@@ -672,14 +727,35 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
     }
   };
 
-  // Cleanup object URL when component unmounts or when previewUrl changes
+  const switchAudioPreviewMode = (mode: 'original' | 'dubbed') => {
+    const targetUrl = mode === 'original' ? originalPreviewUrl : dubbedPreviewUrl;
+    const targetVideoId = mode === 'original' ? originalVideoId : dubbedVideoId;
+
+    if (!targetUrl) {
+      toast.error(mode === 'original' ? 'Original preview not available yet' : 'Dubbed preview not available yet');
+      return;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
+    setIsPlaying(false);
+    setPreviewUrl(targetUrl);
+    if (targetVideoId) {
+      setVideoId(targetVideoId);
+    }
+    setAudioPreviewMode(mode);
+  };
+
+  // Cleanup tracked blob URLs on unmount
   useEffect(() => {
     return () => {
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
-      }
+      objectUrlsRef.current.forEach((url) => {
+        URL.revokeObjectURL(url);
+      });
+      objectUrlsRef.current.clear();
     };
-  }, [previewUrl]);
+  }, []);
 
   return (
     <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl overflow-hidden border border-white/20 animate-fade-in">
@@ -993,6 +1069,38 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
                     disabled={isDubbing}
                   />
                 </label>
+
+                {originalPreviewUrl && dubbedPreviewUrl && (
+                  <div className="rounded-lg border border-blue-200 bg-white p-3">
+                    <p className="text-sm font-medium text-gray-700 mb-2">Preview Voice Mode</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => switchAudioPreviewMode('original')}
+                        className={`rounded-lg border px-3 py-2 text-left transition-all ${
+                          audioPreviewMode === 'original'
+                            ? 'border-blue-500 bg-blue-100 text-blue-700'
+                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        <p className="font-semibold text-sm">Original Voice On</p>
+                        <p className="text-xs">AI Dubbed Voice Off</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => switchAudioPreviewMode('dubbed')}
+                        className={`rounded-lg border px-3 py-2 text-left transition-all ${
+                          audioPreviewMode === 'dubbed'
+                            ? 'border-blue-500 bg-blue-100 text-blue-700'
+                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        <p className="font-semibold text-sm">AI Dubbed Voice On</p>
+                        <p className="text-xs">Original Voice Off</p>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-[2fr_1fr] gap-3">
                   <button
