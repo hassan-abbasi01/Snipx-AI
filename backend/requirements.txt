@@ -20,6 +20,7 @@ librosa==0.10.1
 scipy==1.11.4
 numba==0.58.1
 SpeechRecognition==3.10.0
+setuptools>=68
 noisereduce==3.0.2
 deep-translator==1.11.4
 gTTS==2.5.4
