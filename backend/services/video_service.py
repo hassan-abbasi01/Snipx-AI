@@ -2232,9 +2232,10 @@ class VideoService:
 
             updated_words.append(updated_word)
 
-        # Fallback: if mapping still marks only one/zero word but multiple filler segments exist,
+        # Fallback: if mapping under-detects while multiple segments exist,
         # attach each segment to the nearest transcript word center.
         if marked_count <= 1 and len(expanded_segments) >= 2 and len(updated_words) >= 2:
+            under_detected = marked_count < len(expanded_segments)
             for seg_start, seg_end in expanded_segments:
                 seg_center = int((seg_start + seg_end) / 2)
                 best_idx = -1
@@ -2252,15 +2253,18 @@ class VideoService:
                         best_distance = distance
                         best_idx = idx
 
-                if best_idx >= 0 and best_distance is not None and best_distance <= 260:
+                max_attach_distance = 420 if under_detected else 260
+                if best_idx >= 0 and best_distance is not None and best_distance <= max_attach_distance:
                     best_word = updated_words[best_idx]
-                    if (
-                        isinstance(best_word, dict)
-                        and not bool(best_word.get('is_filler', False))
-                        and self._is_sound_filler_token(best_word.get('text', ''))
-                    ):
-                        best_word['is_filler'] = True
-                        marked_count += 1
+                    if isinstance(best_word, dict) and not bool(best_word.get('is_filler', False)):
+                        token_is_sound = self._is_sound_filler_token(best_word.get('text', ''))
+                        # In under-detected mode, allow timing-based fallback marks
+                        # so frontend shows all detected filler regions.
+                        if token_is_sound or under_detected:
+                            best_word['is_filler'] = True
+                            if under_detected and not token_is_sound:
+                                best_word['is_timing_filler'] = True
+                            marked_count += 1
 
         if marked_count == 0:
             return transcript, 0
@@ -2480,22 +2484,31 @@ class VideoService:
             if should_cut_filler_segments:
                 current_progress += step_progress
                 self._emit_progress(video_id, 'cutting_filler_segments', int(current_progress), 'Cutting filler segments from video...')
-                # Use transcript-highlighted segments as source of truth for exact cut alignment.
-                filler_segments = self._build_filler_segments_from_transcript(
+                transcript_segments = self._build_filler_segments_from_transcript(
                     video.transcript,
                     include_repeated=False,
                     pre_pad_ms=int(options.get('filler_cut_pre_pad_ms', 0) or 0),
                     post_pad_ms=int(options.get('filler_cut_post_pad_ms', 75) or 75),
                 )
 
-                if not filler_segments:
-                    metrics_segments = (
-                        ((video.outputs or {}).get('audio_enhancement_metrics') or {}).get('filler_segments')
-                        or []
+                metrics_segments = (
+                    ((video.outputs or {}).get('audio_enhancement_metrics') or {}).get('filler_segments')
+                    or []
+                )
+                metrics_segments = self._normalize_cut_segments_ms(metrics_segments, merge_gap_ms=8)
+
+                # Prefer audio-detected segments for actual cuts.
+                # Transcript may under-mark fillers (e.g., only 1 word highlighted) even when Whisper found more.
+                if metrics_segments:
+                    filler_segments = metrics_segments
+                    print(
+                        f"[VIDEO SERVICE] Using {len(filler_segments)} filler segments from audio metrics "
+                        f"(transcript had {len(transcript_segments)})"
                     )
-                    filler_segments = self._normalize_cut_segments_ms(metrics_segments, merge_gap_ms=8)
+                else:
+                    filler_segments = transcript_segments
                     if filler_segments:
-                        print(f"[VIDEO SERVICE] Using {len(filler_segments)} filler segments from audio metrics fallback")
+                        print(f"[VIDEO SERVICE] Using {len(filler_segments)} filler segments from transcript")
 
                 print(f"[VIDEO SERVICE] Cut stage resolved {len(filler_segments)} filler segments")
                 
