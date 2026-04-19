@@ -2927,8 +2927,16 @@ class VideoService:
                             new_transcript = retry_transcript
                             print(f"[VIDEO SERVICE] Aggressive retry accepted: {retry_transcript['total_words']} words, {retry_fillers} fillers")
 
-            # Build cut segments from transcript itself so cut timing stays 1:1 with highlighted words.
-            if detect_and_remove_fillers and video.transcript and video.transcript.get('words'):
+            # IMPORTANT: Do NOT force transcript-derived segments by default.
+            # If transcript is stale/under-detected (e.g., only 1 filler marked), forcing segments
+            # causes Whisper detection to be skipped and repeats the same wrong cut every time.
+            use_transcript_forced_segments = bool(options.get('use_transcript_forced_filler_segments', False))
+            if (
+                use_transcript_forced_segments
+                and detect_and_remove_fillers
+                and video.transcript
+                and video.transcript.get('words')
+            ):
                 forced_filler_segments = self._build_filler_segments_from_transcript(
                     video.transcript,
                     include_repeated=False,
@@ -2936,7 +2944,7 @@ class VideoService:
                     post_pad_ms=int(options.get('filler_cut_post_pad_ms', 75) or 75),
                 )
                 backend_options['forced_filler_segments'] = forced_filler_segments
-                print(f"[VIDEO SERVICE] Using {len(forced_filler_segments)} transcript-aligned filler segments for cutting")
+                print(f"[VIDEO SERVICE] Using {len(forced_filler_segments)} transcript-forced filler segments by explicit option")
             
             # Enhance the audio (pass audio_path for Whisper filler detection)
             print(f"[VIDEO SERVICE] Starting audio enhancement...")
