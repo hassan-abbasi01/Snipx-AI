@@ -2148,6 +2148,75 @@ class VideoService:
             return self._to_bson_safe(value.tolist())
         return value
 
+    def _apply_detected_fillers_to_transcript(self, transcript, filler_segments):
+        """Mark transcript words as fillers when they overlap detected filler time segments."""
+        if not isinstance(transcript, dict):
+            return transcript, 0
+
+        words = transcript.get('words') or []
+        if not isinstance(words, list) or not words:
+            return transcript, 0
+
+        normalized_segments = self._normalize_cut_segments_ms(filler_segments, merge_gap_ms=8)
+        if not normalized_segments:
+            return transcript, 0
+
+        updated_words = []
+        marked_count = 0
+
+        for word in words:
+            if not isinstance(word, dict):
+                updated_words.append(word)
+                continue
+
+            try:
+                start_ms = int(round(float(word.get('start', 0.0)) * 1000))
+                end_ms = int(round(float(word.get('end', word.get('start', 0.0))) * 1000))
+            except Exception:
+                updated_words.append(word)
+                continue
+
+            if end_ms <= start_ms:
+                end_ms = start_ms + 1
+
+            word_duration = max(1, end_ms - start_ms)
+            overlap_needed = max(35, int(word_duration * 0.35))
+            overlaps = False
+
+            for seg_start, seg_end in normalized_segments:
+                overlap_ms = max(0, min(end_ms, seg_end) - max(start_ms, seg_start))
+                if overlap_ms >= overlap_needed:
+                    overlaps = True
+                    break
+
+            updated_word = dict(word)
+            if overlaps and not bool(updated_word.get('is_filler', False)):
+                updated_word['is_filler'] = True
+                marked_count += 1
+
+            updated_words.append(updated_word)
+
+        if marked_count == 0:
+            return transcript, 0
+
+        updated_transcript = dict(transcript)
+        updated_transcript['words'] = updated_words
+        updated_transcript['filler_count'] = sum(1 for w in updated_words if isinstance(w, dict) and w.get('is_filler'))
+        updated_transcript['repeated_count'] = sum(1 for w in updated_words if isinstance(w, dict) and w.get('is_repeated'))
+        updated_transcript['total_words'] = len(updated_words)
+        updated_transcript['filler_words'] = [
+            {
+                'word': str(w.get('text', '') or ''),
+                'start': w.get('start', 0),
+                'end': w.get('end', 0),
+                'confidence': 0.95,
+            }
+            for w in updated_words
+            if isinstance(w, dict) and w.get('is_filler')
+        ]
+
+        return updated_transcript, marked_count
+
     def save_video(self, file, user_id):
         if not file:
             raise ValueError("No file provided")
@@ -2352,6 +2421,15 @@ class VideoService:
                     pre_pad_ms=int(options.get('filler_cut_pre_pad_ms', 0) or 0),
                     post_pad_ms=int(options.get('filler_cut_post_pad_ms', 75) or 75),
                 )
+
+                if not filler_segments:
+                    metrics_segments = (
+                        ((video.outputs or {}).get('audio_enhancement_metrics') or {}).get('filler_segments')
+                        or []
+                    )
+                    filler_segments = self._normalize_cut_segments_ms(metrics_segments, merge_gap_ms=8)
+                    if filler_segments:
+                        print(f"[VIDEO SERVICE] Using {len(filler_segments)} filler segments from audio metrics fallback")
 
                 print(f"[VIDEO SERVICE] Cut stage resolved {len(filler_segments)} filler segments")
                 
@@ -2755,6 +2833,34 @@ class VideoService:
                 else:
                     print(f"[VIDEO SERVICE] Transcript generation returned no words")
 
+                need_aggressive_retry = (
+                    bool(cut_filler_segments_from_video)
+                    and enhancement_type != 'aggressive'
+                    and (
+                        not new_transcript
+                        or int((new_transcript or {}).get('total_words', 0) or 0) == 0
+                        or int((new_transcript or {}).get('filler_count', 0) or 0) == 0
+                    )
+                )
+                if need_aggressive_retry:
+                    print("[VIDEO SERVICE] Transcript missed fillers; retrying with aggressive detection...")
+                    retry_transcript = audio_enhancer.generate_transcript_with_fillers(
+                        audio_path,
+                        enhancement_type='aggressive',
+                        detect_repeated=detect_repeated
+                    )
+                    if retry_transcript and retry_transcript.get('total_words', 0) > 0:
+                        retry_fillers = int(retry_transcript.get('filler_count', 0) or 0)
+                        base_fillers = int((new_transcript or {}).get('filler_count', 0) or 0)
+                        if retry_fillers >= base_fillers:
+                            video.transcript = retry_transcript
+                            self.videos.update_one(
+                                {'_id': video._id},
+                                {'$set': {'transcript': retry_transcript}}
+                            )
+                            new_transcript = retry_transcript
+                            print(f"[VIDEO SERVICE] Aggressive retry accepted: {retry_transcript['total_words']} words, {retry_fillers} fillers")
+
             # Build cut segments from transcript itself so cut timing stays 1:1 with highlighted words.
             if detect_and_remove_fillers and video.transcript and video.transcript.get('words'):
                 forced_filler_segments = self._build_filler_segments_from_transcript(
@@ -2775,6 +2881,17 @@ class VideoService:
                 print(f"[VIDEO SERVICE] Filler word removal: DISABLED")
                 self._emit_progress(vid_id, 'enhancing_audio', 25, 'Enhancing audio quality...')
             enhanced_audio, metrics = audio_enhancer.enhance_audio(audio_path, backend_options)
+
+            detected_segments = metrics.get('filler_segments', []) or []
+            if detect_and_remove_fillers and detected_segments and isinstance(video.transcript, dict):
+                updated_transcript, marked_count = self._apply_detected_fillers_to_transcript(video.transcript, detected_segments)
+                if marked_count > 0:
+                    video.transcript = updated_transcript
+                    self.videos.update_one(
+                        {'_id': video._id},
+                        {'$set': {'transcript': updated_transcript}}
+                    )
+                    print(f"[VIDEO SERVICE] Transcript highlight sync from detected segments: +{marked_count} words marked")
             
             self._emit_progress(vid_id, 'enhancing_audio', 60, 'Audio enhanced. Updating transcript...')
             
@@ -3107,6 +3224,10 @@ class VideoService:
                 options.get('cut_filler_segments', options.get('remove_filler_words', False))
                 or options.get('detect_and_remove_fillers', options.get('remove_fillers', False))
             )
+
+            if (not should_cut_filler_segments) and filler_segments:
+                should_cut_filler_segments = True
+                print("[VIDEO FILLER REMOVAL] Forcing cut because pre-detected segments were provided")
 
             # Check if this feature is enabled
             if not should_cut_filler_segments:
