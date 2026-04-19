@@ -70,7 +70,7 @@ const Profile = () => {
         email: user?.email || 'demo@snipx.com',
         firstName: user?.firstName || 'Demo',
         lastName: user?.lastName || 'User',
-        joinDate: user?.createdAt || new Date().toISOString(),
+        joinDate: new Date().toISOString(),
         totalVideos: 0, // Will be updated after loading videos
         totalProcessingTime: 0,
         preferences: {
@@ -165,18 +165,6 @@ const Profile = () => {
       }
     } catch (error) {
       toast.error('Failed to update profile');
-    }
-  };
-
-  const handlePreferenceChange = (key: string, value: boolean | string) => {
-    if (profile) {
-      setProfile({
-        ...profile,
-        preferences: {
-          ...profile.preferences,
-          [key]: value
-        }
-      });
     }
   };
 
@@ -361,7 +349,7 @@ const Profile = () => {
                           { label: 'Total Videos Processed', value: profile?.totalVideos, delay: '0ms' },
                           { label: 'Processing Time', value: `${profile?.totalProcessingTime} minutes`, delay: '100ms' },
                           { label: 'Member Since', value: new Date(profile?.joinDate || '').toLocaleDateString(), delay: '200ms' }
-                        ].map((stat, index) => (
+                        ].map((stat) => (
                           <div 
                             key={stat.label}
                             className="flex justify-between items-center animate-bounce-in-3d"
@@ -508,7 +496,8 @@ const Profile = () => {
                                   onClick={async () => {
                                     try {
                                       toast.loading('Preparing download...');
-                                      const response = await fetch(`http://localhost:5000/api/videos/${video.id}/download`, {
+                                      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+                                      const response = await fetch(`${apiUrl}/videos/${video.id}/download`, {
                                         headers: {
                                           'Authorization': `Bearer ${localStorage.getItem('token')}`
                                         }
