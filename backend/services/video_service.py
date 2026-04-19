@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import unicodedata
 from datetime import datetime
 from uuid import uuid4
 from models.video import Video
@@ -809,10 +810,14 @@ class AudioEnhancer:
     def _normalize_token(text: str) -> str:
         if not text:
             return ""
-        # Lowercase, strip, and remove most punctuation so variants like "mm-hmm" => "mmhmm"
-        text = str(text).lower().strip()
-        # Keep only ASCII letters/digits for robust matching across punctuation styles
-        return re.sub(r"[^a-z0-9]+", "", text)
+        # Unicode-aware normalization so non-English transcript words are not dropped.
+        text = unicodedata.normalize("NFKC", str(text)).lower().strip()
+        cleaned_chars = []
+        for ch in text:
+            category = unicodedata.category(ch)
+            if ch.isalnum() or category.startswith("M"):
+                cleaned_chars.append(ch)
+        return ''.join(cleaned_chars)
 
     @classmethod
     def _match_filler(cls, word: str, single_word_fillers: set[str]):
@@ -827,16 +832,20 @@ class AudioEnhancer:
             return normalized
 
         # Heuristics for elongated disfluencies: uhh/uhhh, umm/ummm, err/errr, hmm/hmmm
-        # Keep conservative bounds to avoid false positives.
-        if len(normalized) <= 6:
+        # Keep bounded length to avoid false positives from long real words.
+        if len(normalized) <= 12:
             if re.fullmatch(r"uh+", normalized):
                 return "uh"
             if re.fullmatch(r"u+h+m+", normalized):
                 return "uhm"
             if re.fullmatch(r"um+", normalized):
                 return "um"
+            if re.fullmatch(r"ah+", normalized):
+                return "ah"
             if re.fullmatch(r"er+", normalized):
                 return "er"
+            if re.fullmatch(r"erm+", normalized):
+                return "erm"
             if re.fullmatch(r"hm+", normalized) or re.fullmatch(r"hmm+", normalized):
                 return "hmm"
             if re.fullmatch(r"mm+", normalized):
