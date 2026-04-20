@@ -1,0 +1,13 @@
+Flask==3.0.0
+Flask-Cors==4.0.0
+Flask-SocketIO==5.6.1
+python-socketio==5.8.0
+python-engineio==4.7.1
+
+pymongo==4.6.1
+python-dotenv==1.0.0
+gunicorn==21.2.0
+requests
+PyJWT
+bcrypt
+authlib
