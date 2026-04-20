@@ -1,30 +1,33 @@
 #!/bin/bash
 set -e
 
-echo ">>> Install system deps (ffmpeg + libmagic)"
+echo ">>> SYSTEM PACKAGES"
 apt update && apt install -y ffmpeg libmagic1
 
-echo ">>> Go to backend"
+echo ">>> PROJECT"
 cd /workspace/Snipx-AI/backend
 
-echo ">>> Fix whisper cache (IMPORTANT)"
+echo ">>> CACHE FIX (WHISPER)"
 mkdir -p /workspace/cache
 export XDG_CACHE_HOME=/workspace/cache
 
-echo ">>> Pull latest code"
+echo ">>> GIT PULL"
 git pull origin main
 
-echo ">>> Create fresh venv"
+echo ">>> VENV"
 python3 -m venv venv
 source venv/bin/activate
 
-echo ">>> Upgrade pip"
+echo ">>> PIP UPGRADE"
 pip install --upgrade pip
 
-echo ">>> Install WEB deps"
+echo ">>> WEB INSTALL"
 pip install -r requirements-web.txt
 
-echo ">>> Install AI deps (whisper, tf, torch)"
+echo ">>> AI INSTALL"
 pip install -r requirements-ai.txt
 
-echo ">>> DONE (system ready)"
+echo ">>> WHISPER FORCE FIX"
+pip install openai-whisper
+
+echo ">>> DONE"
