@@ -1263,23 +1263,37 @@ class AudioEnhancer:
                 "Transcribe naturally and keep spoken hesitation sounds like um or uh when present. "
                 "Do not hallucinate repeated fillers."
             )
+
+            audio_source = self._resolve_whisper_ts_audio_source(audio_path)
             
             # Transcribe with ENHANCED word timestamps using whisper-timestamped.
             # This is required to reliably capture disfluencies like "um/uh/uhm".
-            audio_array = whisper_ts.load_audio(audio_path)
-            result = whisper_ts.transcribe(
-                model,
-                audio_array,
-                language=None,
-                vad=False,
-                detect_disfluencies=False,
-                compute_word_confidence=False,
-                trust_whisper_timestamps=True,
-                initial_prompt=filler_prompt,
-                condition_on_previous_text=False,
-                no_speech_threshold=0.55,
-                suppress_tokens="-1",
-            )
+            try:
+                result = whisper_ts.transcribe(
+                    model,
+                    audio_source,
+                    language=None,
+                    vad=False,
+                    detect_disfluencies=False,
+                    compute_word_confidence=False,
+                    trust_whisper_timestamps=True,
+                    initial_prompt=filler_prompt,
+                    condition_on_previous_text=False,
+                    no_speech_threshold=0.55,
+                    suppress_tokens="-1",
+                )
+            except Exception as ts_err:
+                print(f"[WHISPER] whisper-timestamped failed in filler detect: {ts_err}; falling back to plain Whisper")
+                result = model.transcribe(
+                    audio_path,
+                    language=None,
+                    verbose=False,
+                    initial_prompt=filler_prompt,
+                    no_speech_threshold=0.55,
+                    condition_on_previous_text=False,
+                    word_timestamps=True,
+                    suppress_tokens=[]
+                )
             
             filler_segments = []
             all_words = []  # Store all words with timestamps for repeated word detection
@@ -1435,6 +1449,22 @@ class AudioEnhancer:
             import traceback
             traceback.print_exc()
             return []
+
+    def _resolve_whisper_ts_audio_source(self, audio_path):
+        """Return a stable whisper-timestamped audio source (waveform or file path fallback)."""
+        if not WHISPER_TS_AVAILABLE:
+            return audio_path
+
+        try:
+            audio_array = whisper_ts.load_audio(audio_path)
+            if isinstance(audio_array, np.ndarray) and audio_array.size > 0:
+                return audio_array
+
+            print("[WHISPER] whisper-timestamped load_audio returned empty/invalid waveform; using file path")
+        except Exception as load_err:
+            print(f"[WHISPER] whisper-timestamped load_audio failed: {load_err}; using file path")
+
+        return audio_path
     
     def generate_transcript_with_fillers(self, audio_path, enhancement_type='medium', detect_repeated=True):
         """Generate full transcript with filler words highlighted for frontend display"""
@@ -1478,12 +1508,12 @@ class AudioEnhancer:
                 "Do not invent or repeat words."
             )
 
-            audio_array = whisper_ts.load_audio(audio_path)
+            audio_source = self._resolve_whisper_ts_audio_source(audio_path)
 
             def _run_ts(*, vad: bool, detect_disfluencies: bool, initial_prompt: str | None, no_speech_threshold: float):
                 return whisper_ts.transcribe(
                     model,
-                    audio_array,
+                    audio_source,
                     language=None,
                     vad=vad,
                     detect_disfluencies=detect_disfluencies,
@@ -3766,7 +3796,7 @@ class VideoService:
                 print("[SUBTITLE CPU] Using CPU for subtitle processing (slower)")
             
             # Get language and style from options
-            language = options.get('subtitle_language', 'en')
+            language = self._normalize_language_code(options.get('subtitle_language', 'en'), fallback='en')
             style = options.get('subtitle_style', 'clean')
             
             print(f"[SUBTITLE DEBUG] Starting subtitle generation for video: {video.filepath}")
@@ -3904,7 +3934,7 @@ class VideoService:
                 
                 print(f"[SUBTITLE DEBUG] Whisper transcription completed")
                 print(f"[SUBTITLE DEBUG] Found {len(result.get('segments', []))} segments")
-                detected_lang = result.get('language', 'en')
+                detected_lang = self._normalize_language_code(result.get('language', 'en'), fallback='en')
                 print(f"[SUBTITLE DEBUG] Detected audio language: {detected_lang}")
                 print(f"[SUBTITLE DEBUG] Full transcription text: {result.get('text', '')[:200]}...")
                 
@@ -3931,10 +3961,24 @@ class VideoService:
                         continue
                     
                     # Translate if needed
-                    if needs_translation:
+                    segment_needs_translation = needs_translation
+                    source_for_translation = detected_lang
+
+                    # Guardrail: if Whisper language detect is wrong, use script heuristic to force translation.
+                    if not segment_needs_translation:
+                        if language == 'ur' and self._looks_latin_text(text):
+                            segment_needs_translation = True
+                            source_for_translation = 'auto'
+                            print("[TRANSLATION] Script mismatch (Latin→Urdu target), forcing translation")
+                        elif language == 'en' and self._looks_arabic_script_text(text):
+                            segment_needs_translation = True
+                            source_for_translation = 'auto'
+                            print("[TRANSLATION] Script mismatch (Arabic-script→English target), forcing translation")
+
+                    if segment_needs_translation:
                         try:
                             print(f"[TRANSLATION] Translating: '{text[:50]}...' from {detected_lang} to {language}")
-                            text = self._translate_text(text, detected_lang, language)
+                            text = self._translate_text(text, source_for_translation, language)
                             print(f"[TRANSLATION] Result: '{text[:50]}...'")
                         except Exception as trans_err:
                             print(f"[TRANSLATION WARNING] Translation failed: {trans_err}, keeping original")
@@ -4359,6 +4403,82 @@ class VideoService:
         except Exception as e:
             print(f"[TRANSLATION] Translation failed: {e}, returning original text")
             return text
+
+    def _normalize_language_code(self, language_code, fallback='en'):
+        """Normalize language variants into stable short codes used across subtitles."""
+        if language_code is None:
+            return fallback
+
+        code = str(language_code).strip().lower().replace('_', '-')
+        if not code:
+            return fallback
+
+        aliases = {
+            'english': 'en',
+            'en-us': 'en',
+            'en-gb': 'en',
+            'urdu': 'ur',
+            'ur-pk': 'ur',
+            'ru-ur': 'ur',
+            'arabic': 'ar',
+            'hindi': 'hi',
+            'spanish': 'es',
+            'espanol': 'es',
+            'español': 'es',
+            'castellano': 'es',
+            'french': 'fr',
+            'german': 'de',
+            'portuguese': 'pt',
+            'russian': 'ru',
+            'italian': 'it',
+            'turkish': 'tr',
+            'dutch': 'nl',
+            'chinese': 'zh',
+            'zh-cn': 'zh',
+            'japanese': 'ja',
+            'korean': 'ko',
+            'auto-detect': 'auto',
+        }
+
+        if code in aliases:
+            return aliases[code]
+
+        if code.startswith('en-'):
+            return 'en'
+        if code.startswith('es-'):
+            return 'es'
+        if code.startswith('ur-'):
+            return 'ur'
+        if code.startswith('ar-'):
+            return 'ar'
+        if code.startswith('hi-'):
+            return 'hi'
+
+        return code
+
+    def _looks_latin_text(self, text):
+        """Detect whether text is mostly Latin-script (useful for EN subtitle checks)."""
+        letters = [char for char in str(text or '') if char.isalpha()]
+        if not letters:
+            return False
+        latin_letters = sum(1 for char in letters if 'a' <= char.lower() <= 'z')
+        return (latin_letters / len(letters)) >= 0.55
+
+    def _looks_arabic_script_text(self, text):
+        """Detect Arabic-script text (covers Urdu script ranges)."""
+        letters = [char for char in str(text or '') if char.isalpha()]
+        if not letters:
+            return False
+
+        def _is_arabic_char(ch):
+            return (
+                ('\u0600' <= ch <= '\u06FF')
+                or ('\u0750' <= ch <= '\u077F')
+                or ('\u08A0' <= ch <= '\u08FF')
+            )
+
+        arabic_letters = sum(1 for char in letters if _is_arabic_char(char))
+        return (arabic_letters / len(letters)) >= 0.35
     
     def _translate_text(self, text, source_lang, target_lang):
         """Generic translation function for any language pair"""
@@ -4367,32 +4487,47 @@ class VideoService:
         
         try:
             from deep_translator import GoogleTranslator
-            
-            # Map language codes
-            lang_map = {
-                'en': 'en', 'english': 'en',
-                'es': 'es', 'spanish': 'es',
-                'fr': 'fr', 'french': 'fr',
-                'de': 'de', 'german': 'de',
-                'ar': 'ar', 'arabic': 'ar',
-                'hi': 'hi', 'hindi': 'hi',
-                'ur': 'ur', 'urdu': 'ur',
-                'ru-ur': 'ur',
-                'zh': 'zh-CN', 'chinese': 'zh-CN',
-                'ja': 'ja', 'japanese': 'ja',
-                'ko': 'ko', 'korean': 'ko'
+
+            source_code = self._normalize_language_code(source_lang, fallback='auto')
+            target_code = self._normalize_language_code(target_lang, fallback='en')
+
+            translator_lang_map = {
+                'zh': 'zh-CN',
             }
-            
-            source_code = lang_map.get(source_lang, source_lang)
-            target_code = lang_map.get(target_lang, target_lang)
+
+            source_code = translator_lang_map.get(source_code, source_code)
+            target_code = translator_lang_map.get(target_code, target_code)
+
+            if target_code == 'auto':
+                return text
+
+            if source_code == target_code and source_code != 'auto':
+                return text
             
             print(f"[TRANSLATION] {source_code} → {target_code}: '{text[:50]}...'")
             
             translator = GoogleTranslator(source=source_code, target=target_code)
             translated_text = translator.translate(text)
+
+            translated_text = (translated_text or '').strip()
+
+            # If strict source detection produced unchanged text, retry with auto source.
+            if (
+                translated_text
+                and translated_text.casefold() == text.strip().casefold()
+                and source_code not in {'auto', target_code}
+            ):
+                try:
+                    print("[TRANSLATION] Unchanged result detected, retrying with auto source")
+                    retry_translator = GoogleTranslator(source='auto', target=target_code)
+                    retried_text = (retry_translator.translate(text) or '').strip()
+                    if retried_text:
+                        translated_text = retried_text
+                except Exception as retry_err:
+                    print(f"[TRANSLATION] Auto-source retry failed: {retry_err}")
             
             print(f"[TRANSLATION] Result: '{translated_text[:50]}...'")
-            return translated_text.strip()
+            return translated_text or text
             
         except ImportError:
             print("[TRANSLATION] deep-translator not available")
