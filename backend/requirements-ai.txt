@@ -26,3 +26,4 @@ python-magic==0.4.27
 
 openai-whisper
 whisper-timestamped==1.14.2
+deep-translator==1.11.4
