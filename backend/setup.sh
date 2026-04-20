@@ -1,22 +1,30 @@
 #!/bin/bash
 set -e
-echo ">>> Step 1: Workspace mein jao"
-cd /workspace
 
-echo ">>> Step 2: Latest code lo"
+echo ">>> Install system deps (ffmpeg + libmagic)"
+apt update && apt install -y ffmpeg libmagic1
+
+echo ">>> Go to backend"
+cd /workspace/Snipx-AI/backend
+
+echo ">>> Fix whisper cache (IMPORTANT)"
+mkdir -p /workspace/cache
+export XDG_CACHE_HOME=/workspace/cache
+
+echo ">>> Pull latest code"
 git pull origin main
 
-echo ">>> Step 3: venv banao /workspace mein (persistent rahega)"
-python3 -m venv /workspace/venv
-source /workspace/venv/bin/activate
+echo ">>> Create fresh venv"
+python3 -m venv venv
+source venv/bin/activate
 
-echo ">>> Step 4: Web dependencies install karo"
+echo ">>> Upgrade pip"
 pip install --upgrade pip
-pip install -r requirements.txt
 
-echo ">>> Step 5: AI dependencies install karo"
+echo ">>> Install WEB deps"
+pip install -r requirements-web.txt
+
+echo ">>> Install AI deps (whisper, tf, torch)"
 pip install -r requirements-ai.txt
 
-echo ""
-echo "✅ SETUP COMPLETE!"
-echo "Ab run karo: source /workspace/venv/bin/activate && python app.py"
+echo ">>> DONE (system ready)"
