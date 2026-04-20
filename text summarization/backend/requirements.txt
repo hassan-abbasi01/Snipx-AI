@@ -11,17 +11,6 @@ gunicorn==21.2.0
 pytesseract==0.3.10
 opencv-python-headless>=4.8.0
 Pillow==10.1.0
-tensorflow==2.15.0
-transformers==4.36.2
-torch==2.1.0
-openai-whisper==20231117
-whisper-timestamped==1.14.2
-librosa==0.10.1
-scipy==1.11.4
-numba==0.58.1
-SpeechRecognition==3.10.0
-noisereduce==3.0.2
-deep-translator==1.11.4
 PyJWT
 bcrypt
 flask-socketio
@@ -30,3 +19,5 @@ authlib
 requests
 gTTS==2.5.0
 openai>=1.0.0
+deep-translator==1.11.4
+SpeechRecognition==3.10.0
