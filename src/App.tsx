@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import Navbar from './components/Navbar';
 import Home from './pages/Home';
 import Editor from './components/VideoEditor';
-import Features from './pages/Features';
+// Lazy-load large pages to split bundles and improve initial load
+const Features = lazy(() => import('./pages/Features'));
 import Technologies from './pages/Technologies';
 import Profile from './pages/Profile';
-import Admin from './pages/Admin';
+const Admin = lazy(() => import('./pages/Admin'));
 import Help from './pages/Help';
 import AdminTickets from './pages/AdminTickets';
 import Login from './pages/Login';
@@ -19,13 +20,13 @@ import VoiceControlButton from './components/VoiceControlButton';
 import { useAuth } from './contexts/AuthContext';
 
 // New Admin Portal Imports
-import AdminLogin from './pages/AdminLogin';
-import AdminDashboard from './pages/AdminDashboard';
-import AdminUsers from './pages/AdminUsers';
-import AdminVideos from './pages/AdminVideos';
-import AdminAnalytics from './pages/AdminAnalytics';
-import AdminSupport from './pages/AdminSupport';
-import AdminProfile from './pages/AdminProfile';
+const AdminLogin = lazy(() => import('./pages/AdminLogin'));
+const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
+const AdminUsers = lazy(() => import('./pages/AdminUsers'));
+const AdminVideos = lazy(() => import('./pages/AdminVideos'));
+const AdminAnalytics = lazy(() => import('./pages/AdminAnalytics'));
+const AdminSupport = lazy(() => import('./pages/AdminSupport'));
+const AdminProfile = lazy(() => import('./pages/AdminProfile'));
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -40,6 +41,7 @@ function App() {
           <LiveChat />
           <KeyboardShortcuts />
           <VoiceControlButton />
+          <Suspense fallback={<div className="p-8 text-center">Loading...</div>}>
           <Routes>
             <Route path="/login" element={!isAuthenticated ? <Login /> : <Navigate to="/editor" />} />
             <Route path="/signup" element={!isAuthenticated ? <Signup /> : <Navigate to="/editor" />} />
@@ -75,6 +77,7 @@ function App() {
               }
             />
           </Routes>
+          </Suspense>
         </div>
       );
     }
