@@ -2266,9 +2266,21 @@ class VideoService:
             updated_word = dict(word)
             if overlaps and not bool(updated_word.get('is_filler', False)):
                 candidate_text = updated_word.get('text', '')
-                if self._is_sound_filler_token(candidate_text):
+                # Only mark as filler when token looks like a sound-filler AND
+                # the word duration is short (avoid marking lexical words like "think").
+                # Conservative threshold: 800ms to allow slightly longer hesitations
+                try:
+                    duration_ms = int(word_duration)
+                except Exception:
+                    duration_ms = int(word_duration)
+
+                if self._is_sound_filler_token(candidate_text) and duration_ms <= 800:
                     updated_word['is_filler'] = True
                     marked_count += 1
+                    print(f"[TRANSCRIPT] Marked as filler: '{candidate_text}' ({duration_ms}ms) overlaps segment {seg_start}-{seg_end}")
+                else:
+                    if self._is_sound_filler_token(candidate_text):
+                        print(f"[TRANSCRIPT] Skipped marking long token as filler: '{candidate_text}' ({duration_ms}ms)")
 
             updated_words.append(updated_word)
 
@@ -2514,18 +2526,18 @@ class VideoService:
                 )
                 metrics_segments = self._normalize_cut_segments_ms(metrics_segments, merge_gap_ms=8)
 
-                # Prefer audio-detected segments for actual cuts.
-                # Transcript may under-mark fillers (e.g., only 1 word highlighted) even when Whisper found more.
-                if metrics_segments:
-                    filler_segments = metrics_segments
+                # Use transcript-highlight times as primary source so video cuts happen
+                # exactly where highlighted words appear in transcript UI.
+                if transcript_segments:
+                    filler_segments = transcript_segments
                     print(
-                        f"[VIDEO SERVICE] Using {len(filler_segments)} filler segments from audio metrics "
-                        f"(transcript had {len(transcript_segments)})"
+                        f"[VIDEO SERVICE] Using {len(filler_segments)} filler segments from transcript highlights "
+                        f"(audio metrics had {len(metrics_segments)})"
                     )
                 else:
-                    filler_segments = transcript_segments
+                    filler_segments = metrics_segments
                     if filler_segments:
-                        print(f"[VIDEO SERVICE] Using {len(filler_segments)} filler segments from transcript")
+                        print(f"[VIDEO SERVICE] Transcript had no fillers; using {len(filler_segments)} audio-metric segments")
 
                 print(f"[VIDEO SERVICE] Cut stage resolved {len(filler_segments)} filler segments")
                 
@@ -3389,6 +3401,7 @@ class VideoService:
                 return []
 
             print(f"[VIDEO FILLER REMOVAL] Normalized to {len(filler_segments)} cut segments")
+            print(f"[VIDEO FILLER REMOVAL] Segments to remove (ms): {filler_segments}")
 
             keep_segments = []
             last_end = 0
@@ -3441,6 +3454,19 @@ class VideoService:
                 'applied_cut_segments_ms': filler_segments,
             }
             
+            # Emit applied segments via WebSocket so frontend can confirm exact cuts
+            try:
+                if self.socketio:
+                    self.socketio.emit('filler_segments_applied', {
+                        'video_id': str(getattr(video, '_id', '')),
+                        'applied_segments_ms': filler_segments,
+                        'segments_removed': len(filler_segments),
+                        'timestamp': datetime.utcnow().isoformat()
+                    })
+                    print(f"[VIDEO FILLER REMOVAL] Emitted filler_segments_applied for video {getattr(video, '_id', '')}")
+            except Exception as e:
+                print(f"[VIDEO FILLER REMOVAL] Failed to emit applied segments: {e}")
+
             print(f"[VIDEO FILLER REMOVAL] Completed! Removed {len(filler_segments)} segments")
             print(f"[VIDEO FILLER REMOVAL] Saved to: {output_path}")
             print(f"[VIDEO FILLER REMOVAL] Time saved: {time_saved:.2f}s ({percentage_saved:.1f}%)")

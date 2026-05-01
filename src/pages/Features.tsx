@@ -126,10 +126,7 @@ const Features = () => {
   const [pauseThreshold] = useState<number>(500);
   const [fillerWordsLevel, setFillerWordsLevel] = useState<string>('medium');
   const [removeFillers, setRemoveFillers] = useState<boolean>(true);
-  const [detectRepeatedWords, setDetectRepeatedWords] = useState<boolean>(false);
   const [removeFillersFromVideo, setRemoveFillersFromVideo] = useState<boolean>(true);
-  const [customFillerWords, setCustomFillerWords] = useState<string[]>(['', '', '', '', '']);
-  const [useCustomFillers, setUseCustomFillers] = useState<boolean>(false);
   const [showProcessedVideo, setShowProcessedVideo] = useState<boolean>(false);
   const [transcriptKey, setTranscriptKey] = useState<number>(0);
   const [subtitleLanguage, setSubtitleLanguage] = useState<string>('en');
@@ -869,9 +866,8 @@ const Features = () => {
       ? (overrides?.forceCutVideo ?? true)
       : removeFillersFromVideo;
     const effectiveRemoveFillersFromVideo = requestedCutVideo;
-    const effectiveDetectRepeated = forceEnableFillers
-      ? (overrides?.forceDetectRepeated ?? detectRepeatedWords)
-      : detectRepeatedWords;
+    // Repeated-word detection removed: always false to avoid over-removal
+    const effectiveDetectRepeated = false;
     
     // Debug logging
     console.log('[FRONTEND] Current checkbox states:');
@@ -887,9 +883,6 @@ const Features = () => {
     console.log('[FRONTEND] ⭐ Voice frequencies (85-8000Hz) ALWAYS PRESERVED');
     console.log('[FRONTEND] ========================================');
     
-    // Filter out empty custom filler words
-    const validCustomFillers = customFillerWords.filter(word => word.trim() !== '');
-    
     // CRITICAL: When filler removal is unchecked, ALL filler-related options must be false
     // Otherwise their default state values (true) leak through and cause unwanted processing
     const processingOptions = { 
@@ -902,8 +895,7 @@ const Features = () => {
       detect_repeated_words: effectiveRemoveFillers ? effectiveDetectRepeated : false,
       cut_filler_segments: effectiveRemoveFillers ? effectiveRemoveFillersFromVideo : false,
       filler_removal_level: effectiveRemoveFillers ? fillerWordsLevel : 'medium',
-      custom_filler_words: effectiveRemoveFillers && useCustomFillers && validCustomFillers.length > 0 ? validCustomFillers : null,
-      use_custom_fillers: effectiveRemoveFillers && useCustomFillers && validCustomFillers.length > 0
+      // custom filler options removed to prevent unreliable cuts
     };
     
     console.log('[FRONTEND] Sending processing options:', processingOptions);
@@ -1907,45 +1899,9 @@ const Features = () => {
                           <option value="aggressive">Aggressive</option>
                         </select>
                         
-                        <label className="flex items-center cursor-pointer text-xs">
-                          <input
-                            type="checkbox"
-                            checked={useCustomFillers}
-                            onChange={(e) => setUseCustomFillers(e.target.checked)}
-                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 mr-2"
-                          />
-                          <span className="text-gray-600 font-semibold">Use custom filler words</span>
-                        </label>
+                        {/* Custom filler words option removed to keep filler-cut behavior stable */}
                         
-                        {useCustomFillers && (
-                          <div className="space-y-1 p-2 bg-white rounded border border-blue-200">
-                            <p className="text-xs text-gray-600 font-semibold mb-1">Enter up to 5 custom filler words:</p>
-                            {[0, 1, 2, 3, 4].map((index) => (
-                              <input
-                                key={index}
-                                type="text"
-                                placeholder={`Word ${index + 1}`}
-                                value={customFillerWords[index]}
-                                onChange={(e) => {
-                                  const newWords = [...customFillerWords];
-                                  newWords[index] = e.target.value;
-                                  setCustomFillerWords(newWords);
-                                }}
-                                className="w-full px-2 py-1 border border-blue-200 rounded text-xs focus:ring-1 focus:ring-blue-500"
-                              />
-                            ))}
-                          </div>
-                        )}
-                        
-                        <label className="flex items-center cursor-pointer text-xs">
-                          <input
-                            type="checkbox"
-                            checked={detectRepeatedWords}
-                            onChange={(e) => setDetectRepeatedWords(e.target.checked)}
-                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 mr-2"
-                          />
-                          <span className="text-gray-600">Detect repeated words</span>
-                        </label>
+                        {/* Repeated-word detection removed from UI to prevent accidental removal */}
                         
                         <label className="flex items-center cursor-pointer text-xs">
                           <input

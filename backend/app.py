@@ -12,6 +12,15 @@ import logging
 import os
 from bson import ObjectId
 
+try:
+    from redis import Redis
+    from rq import Queue
+    RQ_IMPORT_AVAILABLE = True
+except Exception:
+    Redis = None
+    Queue = None
+    RQ_IMPORT_AVAILABLE = False
+
 # Fix Whisper Triton import error on Windows/GPU
 os.environ['WHISPER_NO_TRITON'] = '1'
 
@@ -106,6 +115,66 @@ auth_service = AuthService(db)
 video_service = VideoService(db, socketio)  # Pass socketio for real-time updates
 support_service = SupportService(db)
 admin_service = AdminService(db, app.config['SECRET_KEY'])
+
+# Redis + RQ queue (non-Docker, local-friendly)
+REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
+RQ_QUEUE_NAME = os.getenv('RQ_QUEUE_NAME', 'video-processing')
+RQ_JOB_TIMEOUT = int(os.getenv('RQ_JOB_TIMEOUT', '7200'))
+
+redis_conn = None
+video_queue = None
+RQ_AVAILABLE = False
+
+if RQ_IMPORT_AVAILABLE:
+    try:
+        redis_conn = Redis.from_url(REDIS_URL)
+        redis_conn.ping()
+        video_queue = Queue(
+            RQ_QUEUE_NAME,
+            connection=redis_conn,
+            default_timeout=RQ_JOB_TIMEOUT,
+        )
+        RQ_AVAILABLE = True
+        logger.info(f"[QUEUE] Connected to Redis queue '{RQ_QUEUE_NAME}' at {REDIS_URL}")
+    except Exception as queue_err:
+        logger.warning(f"[QUEUE] Redis not available, falling back to in-process threading: {queue_err}")
+else:
+    logger.warning("[QUEUE] redis/rq packages not installed, falling back to in-process threading")
+
+
+def process_video_job(video_id, options):
+    """RQ job: process a single video in worker process."""
+    try:
+        logger.info(f"[QUEUE JOB] Started processing video {video_id}")
+        video_service.update_video_status(video_id, 'processing')
+        socketio.emit('processing_progress', {
+            'video_id': str(video_id),
+            'step': 'processing_started',
+            'progress': 1,
+            'message': 'Processing started from queue worker',
+            'timestamp': datetime.utcnow().isoformat(),
+        })
+
+        video_service.process_video(video_id, options)
+
+        video = video_service.get_video(video_id)
+        if video:
+            logger.info(f"[QUEUE JOB] Completed video {video_id} with outputs: {video.outputs}")
+
+        return {'ok': True, 'video_id': str(video_id)}
+    except Exception as ex:
+        logger.error(f"[QUEUE JOB] Processing failed for video {video_id}: {ex}")
+        import traceback
+        traceback.print_exc()
+        video_service.update_video_status(video_id, 'failed')
+        socketio.emit('processing_progress', {
+            'video_id': str(video_id),
+            'step': 'failed',
+            'progress': 100,
+            'message': f'Processing failed: {ex}',
+            'timestamp': datetime.utcnow().isoformat(),
+        })
+        raise
 
 # Import and log GPU status
 from services.gpu_manager import gpu_manager, get_gpu_info
@@ -547,11 +616,41 @@ def process_video(user_id, video_id):
         print(f"[PROCESS] thumbnail_background_color: {options.get('thumbnail_background_color')}")
         print(f"[PROCESS] ===========================================================")
         
-        # Mark video as processing immediately so frontend knows it started
+        # Preferred path: enqueue to Redis/RQ so workers handle concurrency/queueing.
+        if RQ_AVAILABLE and video_queue is not None:
+            video_service.update_video_status(video_id, 'queued')
+
+            job = video_queue.enqueue(
+                'app.process_video_job',
+                video_id,
+                options,
+                job_timeout=RQ_JOB_TIMEOUT,
+                result_ttl=86400,
+                failure_ttl=86400,
+            )
+
+            queue_position = max(len(video_queue), 1)
+            socketio.emit('processing_progress', {
+                'video_id': str(video_id),
+                'step': 'queued',
+                'progress': 0,
+                'message': f'Queued for processing (position {queue_position})',
+                'timestamp': datetime.utcnow().isoformat(),
+            })
+
+            return jsonify({
+                'message': 'Processing queued',
+                'status': 'queued',
+                'job_id': job.id,
+                'queue_name': RQ_QUEUE_NAME,
+                'queue_position': queue_position,
+            }), 202
+
+        # Fallback path: old in-process background thread if Redis/RQ unavailable.
         video_service.update_video_status(video_id, 'processing')
-        
-        # Run heavy processing in a background thread so this request returns immediately
+
         import threading
+
         def _run():
             try:
                 video_service.process_video(video_id, options)
@@ -561,13 +660,14 @@ def process_video(user_id, video_id):
                     logger.info(f"Video outputs: {video.outputs}")
             except Exception as ex:
                 logger.error(f"[PROCESS] Background processing error: {ex}")
-                import traceback; traceback.print_exc()
+                import traceback
+                traceback.print_exc()
                 video_service.update_video_status(video_id, 'failed')
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        
-        return jsonify({'message': 'Processing started'}), 200
+
+        return jsonify({'message': 'Processing started (thread fallback)'}), 200
     except Exception as e:
         logger.error(f"Process error: {str(e)}")
         import traceback
