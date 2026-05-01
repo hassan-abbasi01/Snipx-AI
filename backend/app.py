@@ -120,6 +120,7 @@ admin_service = AdminService(db, app.config['SECRET_KEY'])
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
 RQ_QUEUE_NAME = os.getenv('RQ_QUEUE_NAME', 'video-processing')
 RQ_JOB_TIMEOUT = int(os.getenv('RQ_JOB_TIMEOUT', '7200'))
+RQ_WORKER_HEARTBEAT_KEY = f"rq:worker:{RQ_QUEUE_NAME}:heartbeat"
 
 redis_conn = None
 video_queue = None
@@ -140,6 +141,18 @@ if RQ_IMPORT_AVAILABLE:
         logger.warning(f"[QUEUE] Redis not available, falling back to in-process threading: {queue_err}")
 else:
     logger.warning("[QUEUE] redis/rq packages not installed, falling back to in-process threading")
+
+
+def _is_queue_worker_alive():
+    """Return True only when Redis/RQ is available and a worker heartbeat exists."""
+    if not RQ_AVAILABLE or redis_conn is None:
+        return False
+
+    try:
+        return redis_conn.get(RQ_WORKER_HEARTBEAT_KEY) is not None
+    except Exception as heartbeat_err:
+        logger.warning(f"[QUEUE] Worker heartbeat check failed: {heartbeat_err}")
+        return False
 
 
 def process_video_job(video_id, options):
@@ -616,8 +629,9 @@ def process_video(user_id, video_id):
         print(f"[PROCESS] thumbnail_background_color: {options.get('thumbnail_background_color')}")
         print(f"[PROCESS] ===========================================================")
         
-        # Preferred path: enqueue to Redis/RQ so workers handle concurrency/queueing.
-        if RQ_AVAILABLE and video_queue is not None:
+        # Preferred path: enqueue only if a worker heartbeat is present.
+        # If no worker is running, process in-process so the request does not get stuck in the queue.
+        if RQ_AVAILABLE and video_queue is not None and _is_queue_worker_alive():
             video_service.update_video_status(video_id, 'queued')
 
             job = video_queue.enqueue(
@@ -645,6 +659,9 @@ def process_video(user_id, video_id):
                 'queue_name': RQ_QUEUE_NAME,
                 'queue_position': queue_position,
             }), 202
+
+        if RQ_AVAILABLE and video_queue is not None:
+            logger.warning("[QUEUE] Worker heartbeat missing, using app fallback processing")
 
         # Fallback path: old in-process background thread if Redis/RQ unavailable.
         video_service.update_video_status(video_id, 'processing')
