@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Send, User, Clock, CheckCircle2 } from 'lucide-react';
+import { connectWebSocket, getSocket } from '../services/websocket';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
@@ -33,21 +34,71 @@ export default function AdminSupport() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [newTicketIds, setNewTicketIds] = useState<string[]>([]);
 
   useEffect(() => {
     fetchTickets();
+
+    // Connect websocket and listen for new tickets / updates
+    const socket = connectWebSocket();
+
+    const onNewTicket = (data: any) => {
+      try {
+        const subject = data?.subject || 'New support ticket';
+        // Simple popup alert — replace with toast/modal if preferred
+        alert(`New ticket: ${subject}`);
+        // Refresh list
+        fetchTickets();
+      } catch (err) {
+        console.error('Error handling new_ticket event', err);
+      }
+    };
+
+    const onTicketUpdated = (data: any) => {
+      // Refresh ticket details/list when an update happens
+      fetchTickets();
+      if (selectedTicket && data?.ticket_id === selectedTicket._id) {
+        fetchTicketDetails(selectedTicket._id);
+      }
+    };
+
+    socket.on('new_ticket', onNewTicket);
+    socket.on('ticket_updated', onTicketUpdated);
+
+    return () => {
+      try {
+        const s = getSocket();
+        if (s) {
+          s.off('new_ticket', onNewTicket);
+          s.off('ticket_updated', onTicketUpdated);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
   }, []);
 
   const fetchTickets = async () => {
     const token = localStorage.getItem('admin_token');
     try {
-      const response = await fetch(`${API_URL}/support/all`, {
+      const response = await fetch(`${API_URL}/admin/support/tickets`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await response.json();
       console.log('Admin fetched tickets:', data);
       if (data.success) {
-        setTickets(data.tickets || []);
+        // Compute 'new' tickets (no responses yet)
+        const list = data.tickets || [];
+        const newIds = list.filter((t: any) => !t.responses || t.responses.length === 0).map((t: any) => t._id);
+        setNewTicketIds(newIds);
+        // Sort: new tickets first, then by created_at desc
+        list.sort((a: any, b: any) => {
+          const aNew = !a.responses || a.responses.length === 0 ? 1 : 0;
+          const bNew = !b.responses || b.responses.length === 0 ? 1 : 0;
+          if (aNew !== bNew) return bNew - aNew;
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
+        setTickets(list);
       } else {
         console.error('Failed to fetch tickets:', data);
       }
@@ -61,7 +112,7 @@ export default function AdminSupport() {
   const fetchTicketDetails = async (ticketId: string) => {
     const token = localStorage.getItem('admin_token');
     try {
-      const response = await fetch(`${API_URL}/support/ticket/${ticketId}`, {
+      const response = await fetch(`${API_URL}/admin/support/ticket/${ticketId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await response.json();
@@ -80,6 +131,8 @@ export default function AdminSupport() {
 
   const handleTicketClick = (ticket: SupportTicket) => {
     fetchTicketDetails(ticket._id);
+    // Mark as read locally (remove highlight)
+    setNewTicketIds(prev => prev.filter(id => id !== ticket._id));
   };
 
   const handleSendReply = async () => {
@@ -89,7 +142,7 @@ export default function AdminSupport() {
     const token = localStorage.getItem('admin_token');
     
     try {
-      const response = await fetch(`${API_URL}/support/ticket/${selectedTicket._id}/reply`, {
+      const response = await fetch(`${API_URL}/admin/support/ticket/${selectedTicket._id}/reply`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -171,7 +224,12 @@ export default function AdminSupport() {
                         <User className="w-5 h-5 text-purple-600" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-900 truncate">{ticket.subject}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-gray-900 truncate">{ticket.subject}</p>
+                          {newTicketIds.includes(ticket._id) ? (
+                            <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded-full">New</span>
+                          ) : null}
+                        </div>
                         <p className="text-xs text-gray-600 mt-1 truncate">{ticket.name || ticket.email}</p>
                         <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
@@ -241,8 +299,7 @@ export default function AdminSupport() {
                   </div>
 
                   {/* Responses */}
-                  {selectedTicket.responses && Array.isArray(selectedTicket.responses) && selectedTicket.responses.length > 0 ? (
-                    selectedTicket.responses.map((response, idx) => (
+                  {selectedTicket?.responses?.length > 0 && selectedTicket.responses.map((response, idx) => (
                     <div key={idx} className={`flex gap-3 ${response.responder_type === 'admin' ? 'flex-row-reverse' : ''}`}>
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                         response.responder_type === 'admin' 
@@ -271,8 +328,7 @@ export default function AdminSupport() {
                         </p>
                       </div>
                     </div>
-                  ))
-                  ) : null}
+                  ))}
                 </div>
 
                 {/* Reply Input */}

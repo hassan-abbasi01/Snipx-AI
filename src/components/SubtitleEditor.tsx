@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Download, Edit3, Save, X, Plus, Trash2, Play, Pause } from 'lucide-react';
+import { Download, Edit3, Save, X, Plus, Trash2, Play } from 'lucide-react';
 import { ApiService } from '../services/api';
 import toast from 'react-hot-toast';
 

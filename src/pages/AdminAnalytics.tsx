@@ -18,6 +18,9 @@ import {
   AreaChart,
   Area,
   ComposedChart,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -37,6 +40,14 @@ interface ChartApiResponse {
   message?: string;
 }
 
+interface SupportStats {
+  open: number;
+  in_progress: number;
+  resolved: number;
+  closed: number;
+  total: number;
+}
+
 interface DataPoint {
   date: string;
   value: number;
@@ -50,6 +61,7 @@ interface TimelinePoint {
 }
 
 const PERIOD_OPTIONS: Period[] = ['week', 'month', 'year'];
+const SUPPORT_COLORS = ['#3b82f6', '#f59e0b', '#10b981', '#64748b'];
 
 const formatCompactNumber = (value: number) =>
   new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
@@ -70,6 +82,13 @@ export default function AdminAnalytics() {
   const [usersData, setUsersData] = useState<DataPoint[]>([]);
   const [videosData, setVideosData] = useState<DataPoint[]>([]);
   const [activityData, setActivityData] = useState<DataPoint[]>([]);
+  const [supportStats, setSupportStats] = useState<SupportStats>({
+    open: 0,
+    in_progress: 0,
+    resolved: 0,
+    closed: 0,
+    total: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +117,29 @@ export default function AdminAnalytics() {
     return payload;
   };
 
+  const fetchSupportStats = async (token: string): Promise<SupportStats> => {
+    const response = await fetch(`${API_URL}/admin/support/stats`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('admin_token');
+        localStorage.removeItem('admin_info');
+        navigate('/admin/login');
+        throw new Error('Session expired. Please login again.');
+      }
+      throw new Error(`Failed to load support stats (${response.status})`);
+    }
+
+    const payload = await response.json();
+    if (!payload.success) {
+      throw new Error(payload.message || 'Support stats endpoint returned unsuccessful response');
+    }
+
+    return payload.stats as SupportStats;
+  };
+
   const toPoints = (payload: ChartApiResponse): DataPoint[] =>
     payload.labels.map((label, index) => ({
       date: label,
@@ -119,15 +161,17 @@ export default function AdminAnalytics() {
     setError(null);
 
     try {
-      const [users, videos, activity] = await Promise.all([
+      const [users, videos, activity, support] = await Promise.all([
         fetchChart(`/admin/analytics/chart/users?period=${period}`, token),
         fetchChart(`/admin/analytics/chart/videos?period=${period}`, token),
         fetchChart(`/admin/analytics/chart/activity?period=${period}`, token),
+        fetchSupportStats(token),
       ]);
 
       setUsersData(toPoints(users));
       setVideosData(toPoints(videos));
       setActivityData(toPoints(activity));
+      setSupportStats(support);
       setLastUpdated(new Date());
     } catch (err) {
       console.error('Error fetching analytics:', err);
@@ -186,6 +230,16 @@ export default function AdminAnalytics() {
       peakActivityDate: peakActivityPoint?.date || '-',
     };
   }, [usersData, videosData, activityData, timelineData]);
+
+  const supportChartData = useMemo(
+    () => [
+      { name: 'Open', value: supportStats.open },
+      { name: 'In Progress', value: supportStats.in_progress },
+      { name: 'Resolved', value: supportStats.resolved },
+      { name: 'Closed', value: supportStats.closed },
+    ],
+    [supportStats]
+  );
 
   if (loading && timelineData.length === 0) {
     return (
@@ -434,6 +488,58 @@ export default function AdminAnalytics() {
               <Area type="monotone" dataKey="activity" stroke="#10b981" strokeWidth={3} fill="url(#pulseFill)" />
             </AreaChart>
           </ResponsiveContainer>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <h3 className="text-lg font-bold text-slate-900 mb-5">Support Ticket Status</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={supportChartData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={70}
+                  outerRadius={110}
+                  paddingAngle={3}
+                >
+                  {supportChartData.map((_, index) => (
+                    <Cell key={`support-cell-${index}`} fill={SUPPORT_COLORS[index % SUPPORT_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <h3 className="text-lg font-bold text-slate-900 mb-5">Support Summary</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="rounded-xl bg-blue-50 p-4 border border-blue-100">
+                <p className="text-xs uppercase tracking-wide text-blue-600 mb-1">Open</p>
+                <p className="text-2xl font-bold text-blue-700">{supportStats.open}</p>
+              </div>
+              <div className="rounded-xl bg-amber-50 p-4 border border-amber-100">
+                <p className="text-xs uppercase tracking-wide text-amber-600 mb-1">In Progress</p>
+                <p className="text-2xl font-bold text-amber-700">{supportStats.in_progress}</p>
+              </div>
+              <div className="rounded-xl bg-emerald-50 p-4 border border-emerald-100">
+                <p className="text-xs uppercase tracking-wide text-emerald-600 mb-1">Resolved</p>
+                <p className="text-2xl font-bold text-emerald-700">{supportStats.resolved}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-4 border border-slate-200">
+                <p className="text-xs uppercase tracking-wide text-slate-500 mb-1">Closed</p>
+                <p className="text-2xl font-bold text-slate-700">{supportStats.closed}</p>
+              </div>
+            </div>
+            <div className="mt-4 rounded-xl bg-slate-50 p-4 border border-slate-200">
+              <p className="text-xs uppercase tracking-wide text-slate-500 mb-1">Total Tickets</p>
+              <p className="text-3xl font-bold text-slate-900">{supportStats.total}</p>
+            </div>
+          </div>
         </div>
       </div>
     </div>

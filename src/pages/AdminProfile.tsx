@@ -1,12 +1,22 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, User, Shield, Save, Bell, Lock } from 'lucide-react';
+import { connectWebSocket, getSocket } from '../services/websocket';
+
+interface NewTicketEvent {
+  ticket_id: string;
+  subject?: string;
+  user_id?: string;
+  created_at?: string;
+}
 
 export default function AdminProfile() {
   const navigate = useNavigate();
   const [adminInfo, setAdminInfo] = useState<any>(null);
   const [activeTab, setActiveTab] = useState('profile');
   const [loading, setLoading] = useState(false);
+  const [unreadTicketCount, setUnreadTicketCount] = useState(0);
+  const [liveNotice, setLiveNotice] = useState<NewTicketEvent | null>(null);
 
   useEffect(() => {
     const info = localStorage.getItem('admin_info');
@@ -16,6 +26,33 @@ export default function AdminProfile() {
       navigate('/admin/login');
     }
   }, [navigate]);
+
+  useEffect(() => {
+    const socket = connectWebSocket();
+
+    const onNewTicket = (data: NewTicketEvent) => {
+      setUnreadTicketCount((prev) => prev + 1);
+      setLiveNotice(data);
+    };
+
+    socket.on('new_ticket', onNewTicket);
+
+    return () => {
+      const s = getSocket();
+      if (s) {
+        s.off('new_ticket', onNewTicket);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!liveNotice) return;
+    const timeout = window.setTimeout(() => {
+      setLiveNotice(null);
+    }, 5000);
+
+    return () => window.clearTimeout(timeout);
+  }, [liveNotice]);
 
   const handleSave = async () => {
     setLoading(true);
@@ -41,9 +78,38 @@ export default function AdminProfile() {
               <ArrowLeft className="w-5 h-5" />
             </button>
             <h1 className="text-2xl font-bold text-gray-900">Settings & Profile</h1>
+            {unreadTicketCount > 0 ? (
+              <button
+                onClick={() => navigate('/admin/support')}
+                className="ml-auto flex items-center gap-2 px-3 py-1.5 bg-yellow-100 text-yellow-800 rounded-full text-sm font-medium hover:bg-yellow-200 transition-colors"
+              >
+                <Bell className="w-4 h-4" />
+                {unreadTicketCount} new ticket{unreadTicketCount > 1 ? 's' : ''}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
+
+      {liveNotice ? (
+        <div className="fixed top-20 right-4 z-50 max-w-sm bg-white border border-yellow-300 rounded-xl shadow-xl p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-yellow-100 flex items-center justify-center">
+              <Bell className="w-4 h-4 text-yellow-700" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-900">New support ticket received</p>
+              <p className="text-sm text-gray-700 truncate">{liveNotice.subject || 'Ticket from user'}</p>
+              <button
+                onClick={() => navigate('/admin/support')}
+                className="mt-2 text-xs font-medium text-purple-700 hover:text-purple-900"
+              >
+                Open Support Inbox
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Profile Header */}

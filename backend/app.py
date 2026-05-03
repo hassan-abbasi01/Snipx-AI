@@ -476,7 +476,19 @@ def create_support_ticket(user_id):
             return jsonify({'error': 'Missing required fields'}), 400
         
         ticket_id = support_service.create_ticket(user_id, data)
-        
+        # Emit a real-time event to notify admins of the new ticket
+        try:
+            ticket_summary = {
+                'ticket_id': str(ticket_id),
+                'subject': data.get('subject'),
+                'user_id': str(user_id),
+                'created_at': datetime.utcnow().isoformat()
+            }
+            socketio.emit('new_ticket', ticket_summary)
+            logger.info(f"Emitted new_ticket event for {ticket_id}")
+        except Exception as emit_err:
+            logger.warning(f"Failed to emit new_ticket event: {emit_err}")
+
         return jsonify({
             'message': 'Support ticket created successfully',
             'ticket_id': ticket_id
@@ -2383,6 +2395,51 @@ def update_admin_profile():
 
 # ===================== ADMIN SUPPORT TICKETS =====================
 
+@app.route('/api/admin/support/tickets', methods=['GET'])
+@admin_required
+def admin_get_support_tickets():
+    """Get all support tickets for the admin tickets page."""
+    try:
+        status = request.args.get('status')
+        priority = request.args.get('priority')
+
+        result = support_service.get_all_tickets(status=status, priority=priority)
+        return jsonify({'success': True, 'tickets': result}), 200
+    except Exception as e:
+        logger.error(f"Admin get support tickets error: {e}")
+        return jsonify({'error': 'Failed to get support tickets'}), 500
+
+@app.route('/api/admin/support/all', methods=['GET'])
+@admin_required
+def admin_get_all_support_tickets():
+    """Alias for the admin support tickets list endpoint."""
+    return admin_get_support_tickets()
+
+@app.route('/api/admin/support/stats', methods=['GET'])
+@admin_required
+def admin_get_support_stats():
+    """Get support ticket stats for admin charts."""
+    try:
+        stats = support_service.get_ticket_stats()
+        return jsonify({'success': True, 'stats': stats}), 200
+    except Exception as e:
+        logger.error(f"Admin get support stats error: {e}")
+        return jsonify({'error': 'Failed to get support stats'}), 500
+
+
+@app.route('/api/admin/support/ticket/<ticket_id>', methods=['GET'])
+@admin_required
+def admin_get_ticket_details(ticket_id):
+    """Alias to get ticket details via admin path."""
+    return get_ticket_details(ticket_id)
+
+
+@app.route('/api/admin/support/ticket/<ticket_id>/reply', methods=['POST'])
+@admin_required
+def admin_reply_to_ticket_alias(ticket_id):
+    """Alias to reply to a ticket via admin path."""
+    return reply_to_ticket(ticket_id)
+
 @app.route('/api/support/all', methods=['GET'])
 @admin_required
 def get_all_support_tickets():
@@ -2466,6 +2523,16 @@ def reply_to_ticket(ticket_id):
         except Exception as e:
             logger.warning(f"Error updating ticket status: {e}")
             # Don't fail the request if status update fails
+        # Emit ticket_updated event to notify clients (user/admin)
+        try:
+            socketio.emit('ticket_updated', {
+                'ticket_id': str(ticket_id),
+                'responder_type': 'admin',
+                'responder_name': admin_email,
+                'timestamp': datetime.utcnow().isoformat()
+            })
+        except Exception as emit_err:
+            logger.warning(f"Failed to emit ticket_updated event: {emit_err}")
         
         return jsonify({
             'success': True,

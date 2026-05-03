@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Clock, User, Mail, MessageSquare, AlertCircle } from 'lucide-react';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+
 interface SupportTicket {
   _id: string;
   name: string;
@@ -29,7 +31,10 @@ const AdminTickets = () => {
   const fetchTickets = async () => {
     try {
       // This would be an admin-only endpoint in production
-      const response = await fetch('/api/admin/support/tickets');
+      const token = localStorage.getItem('admin_token');
+      const response = await fetch(`${API_URL}/admin/support/tickets`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
       if (response.ok) {
         const data = await response.json();
         setTickets(data.tickets || []);
