@@ -30,7 +30,7 @@ interface UserProfile {
 }
 
 const Profile = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, setUser } = useAuth();
   const [activeTab, setActiveTab] = useState('profile');
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [videoHistory, setVideoHistory] = useState<VideoHistory[]>([]);
@@ -119,27 +119,23 @@ const Profile = () => {
         });
         console.log('Processed video history:', processedVideos);
         setVideoHistory(processedVideos);
-        
-        // Update profile stats with real video count
-        if (profile) {
-          const totalDuration = processedVideos.reduce((acc, v) => acc + (v.duration || 0), 0);
-          setProfile({
-            ...profile,
-            totalVideos: processedVideos.length,
-            totalProcessingTime: Math.round(totalDuration)
-          });
-        }
+
+        // Update stats using functional state to avoid stale closure issues.
+        const totalDurationSeconds = processedVideos.reduce((acc, v) => acc + (v.duration || 0), 0);
+        const totalDurationMinutes = Math.round(totalDurationSeconds / 60);
+        setProfile(prev => prev ? {
+          ...prev,
+          totalVideos: processedVideos.length,
+          totalProcessingTime: totalDurationMinutes
+        } : prev);
       } else {
         console.log('No videos found for user or empty array');
         setVideoHistory([]);
-        // Update profile stats
-        if (profile) {
-          setProfile({
-            ...profile,
-            totalVideos: 0,
-            totalProcessingTime: 0
-          });
-        }
+        setProfile(prev => prev ? {
+          ...prev,
+          totalVideos: 0,
+          totalProcessingTime: 0
+        } : prev);
       }
     } catch (error) {
       console.error('Failed to load video history:', error);
@@ -152,19 +148,31 @@ const Profile = () => {
 
   const handleSaveProfile = async () => {
     try {
-      // API call to update profile
+      const updated = await ApiService.updateUserProfile({
+        firstName: editForm.firstName,
+        lastName: editForm.lastName,
+        email: editForm.email
+      });
+
+      const updatedUser = updated?.user || updated;
+      if (updatedUser) {
+        setUser({
+          email: updatedUser.email,
+          firstName: updatedUser.first_name || updatedUser.firstName,
+          lastName: updatedUser.last_name || updatedUser.lastName
+        });
+        setProfile(prev => prev ? {
+          ...prev,
+          firstName: updatedUser.first_name || updatedUser.firstName || prev.firstName,
+          lastName: updatedUser.last_name || updatedUser.lastName || prev.lastName,
+          email: updatedUser.email || prev.email
+        } : prev);
+      }
+
       toast.success('Profile updated successfully');
       setIsEditing(false);
-      if (profile) {
-        setProfile({
-          ...profile,
-          firstName: editForm.firstName,
-          lastName: editForm.lastName,
-          email: editForm.email
-        });
-      }
     } catch (error) {
-      toast.error('Failed to update profile');
+      toast.error(error instanceof Error ? error.message : 'Failed to update profile');
     }
   };
 

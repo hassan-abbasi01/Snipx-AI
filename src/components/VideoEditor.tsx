@@ -8,11 +8,6 @@ interface VideoEditorProps {
   videoUrl?: string;
 }
 
-interface TourStep {
-  title: string;
-  description: string;
-}
-
 const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -66,8 +61,6 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
   const [musicUrl, setMusicUrl] = useState<string | null>(null);
   const [videoVolume, setVideoVolume] = useState(100);
   const [muteVideoAudio, setMuteVideoAudio] = useState(false);
-  const [showEditorTour, setShowEditorTour] = useState(false);
-  const [tourStepIndex, setTourStepIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -94,33 +87,6 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
   const secondTrimDurationSec = Math.max(0, segment2EndSec - segment2StartSec);
   const totalTrimDurationSec = firstTrimDurationSec + (useSecondTrimSegment ? secondTrimDurationSec : 0);
   const segmentsOverlap = useSecondTrimSegment && !(segment1EndSec <= segment2StartSec || segment2EndSec <= segment1StartSec);
-
-  const tourSteps: TourStep[] = [
-    {
-      title: 'Welcome',
-      description: 'This editor helps you upload, edit, improve audio, and export in a guided workflow.'
-    },
-    {
-      title: 'Upload',
-      description: 'Upload your main video first. Most actions, including merge and dubbing, require an uploaded video.'
-    },
-    {
-      title: 'Edit (AI-Powered)',
-      description: 'Use trim, merge, text, and AI tools to shape your final edit from one interface.'
-    },
-    {
-      title: 'Audio Enhancement',
-      description: 'Adjust music, original audio levels, and mute options for cleaner sound output.'
-    },
-    {
-      title: 'Export',
-      description: 'Export and download your final output once preview and edits look correct.'
-    },
-    {
-      title: 'Finish',
-      description: 'You are ready to use the full editor workflow independently.'
-    },
-  ];
 
   const clampToDuration = (seconds: number) => {
     const total = duration && duration > 0 ? duration : 100;
@@ -414,40 +380,6 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
     segment2EndSec,
     duration,
   ]);
-
-  useEffect(() => {
-    try {
-      const tourCompleted = localStorage.getItem('editorTourCompleted');
-      if (!tourCompleted) {
-        setShowEditorTour(true);
-      }
-    } catch {
-      // Ignore storage access issues and continue without auto-tour.
-    }
-  }, []);
-
-  const closeEditorTour = (markCompleted: boolean) => {
-    setShowEditorTour(false);
-    if (markCompleted) {
-      try {
-        localStorage.setItem('editorTourCompleted', 'true');
-      } catch {
-        // Ignore storage access issues.
-      }
-    }
-  };
-
-  const nextTourStep = () => {
-    if (tourStepIndex >= tourSteps.length - 1) {
-      closeEditorTour(true);
-      return;
-    }
-    setTourStepIndex((prev) => prev + 1);
-  };
-
-  const previousTourStep = () => {
-    setTourStepIndex((prev) => Math.max(0, prev - 1));
-  };
 
   const resetDubbingState = (closePanel = false) => {
     setSourceDubbingLanguage('auto');
@@ -1776,52 +1708,6 @@ const VideoEditor = ({ videoUrl }: VideoEditorProps) => {
           </div>
         </div>
       </div>
-
-      {showEditorTour && (
-        <div className="fixed inset-0 z-[1000] bg-black/45 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-xl rounded-2xl bg-white shadow-2xl border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-sm font-semibold text-purple-700">
-                Editor Tour {tourStepIndex + 1}/{tourSteps.length}
-              </p>
-              <button
-                onClick={() => closeEditorTour(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <h3 className="text-xl font-bold text-gray-900 mb-2">{tourSteps[tourStepIndex].title}</h3>
-            <p className="text-gray-600 mb-6">{tourSteps[tourStepIndex].description}</p>
-
-            <div className="flex items-center justify-between gap-3">
-              <button
-                onClick={() => closeEditorTour(false)}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
-              >
-                Skip Tour
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={previousTourStep}
-                  disabled={tourStepIndex === 0}
-                  className="px-4 py-2 rounded-lg text-sm font-medium bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  Back
-                </button>
-                <button
-                  onClick={nextTourStep}
-                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700"
-                >
-                  {tourStepIndex === tourSteps.length - 1 ? 'Finish' : 'Next'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Custom Animations */}
       <style>{`

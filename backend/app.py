@@ -1964,6 +1964,66 @@ def get_current_user(user_id):
     
     return jsonify(user), 200
 
+@app.route('/api/profile', methods=['GET'])
+@require_auth
+def get_user_profile(user_id):
+    try:
+        user = db.users.find_one({'_id': ObjectId(user_id)})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        user['_id'] = str(user['_id'])
+        user.pop('password', None)
+        user.pop('password_hash', None)
+
+        return jsonify(user), 200
+    except Exception as e:
+        logger.exception(f"Get profile error for user {user_id}")
+        return jsonify({'error': 'Failed to load profile'}), 500
+
+@app.route('/api/profile', methods=['PUT'])
+@require_auth
+def update_user_profile(user_id):
+    try:
+        data = request.get_json() or {}
+
+        allowed_updates = {}
+        if 'firstName' in data:
+            allowed_updates['first_name'] = data['firstName']
+        if 'lastName' in data:
+            allowed_updates['last_name'] = data['lastName']
+        if 'email' in data:
+            allowed_updates['email'] = data['email']
+
+        if 'preferences' in data:
+            allowed_updates['settings'] = data['preferences']
+
+        if not allowed_updates:
+            return jsonify({'error': 'No valid fields provided'}), 400
+
+        if 'email' in allowed_updates:
+            existing_user = db.users.find_one({
+                'email': allowed_updates['email'],
+                '_id': {'$ne': ObjectId(user_id)}
+            })
+            if existing_user:
+                return jsonify({'error': 'Email already in use'}), 400
+
+        updated_user = auth_service.update_user(user_id, allowed_updates)
+        user_payload = updated_user.to_dict()
+        user_payload['_id'] = str(ObjectId(user_id))
+        user_payload.pop('password_hash', None)
+
+        return jsonify({
+            'message': 'Profile updated successfully',
+            'user': user_payload
+        }), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.exception(f"Update profile error for user {user_id}")
+        return jsonify({'error': 'Failed to update profile'}), 500
+
 @app.route('/api/auth/delete-account', methods=['DELETE'])
 @require_auth
 def delete_account(user_id):
