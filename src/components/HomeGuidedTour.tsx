@@ -6,8 +6,6 @@ interface TourStep {
   description: string;
 }
 
-const TOUR_STORAGE_KEY = 'homeTourCompleted_v2';
-
 const tourSteps: TourStep[] = [
   {
     title: 'Welcome to SnipX',
@@ -41,33 +39,20 @@ const HomeGuidedTour = () => {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      try {
-        const completed = localStorage.getItem(TOUR_STORAGE_KEY);
-        if (!completed) {
-          setIsOpen(true);
-        }
-      } catch {
-        setIsOpen(true);
-      }
+      // Always show tour when home loads.
+      setIsOpen(true);
     }, 250);
 
     return () => window.clearTimeout(timer);
   }, []);
 
-  const closeTour = (markCompleted: boolean) => {
+  const closeTour = () => {
     setIsOpen(false);
-    if (markCompleted) {
-      try {
-        localStorage.setItem(TOUR_STORAGE_KEY, 'true');
-      } catch {
-        // Ignore storage access issues.
-      }
-    }
   };
 
   const nextStep = () => {
     if (stepIndex >= tourSteps.length - 1) {
-      closeTour(true);
+      closeTour();
       return;
     }
     setStepIndex((prev) => prev + 1);
@@ -89,7 +74,7 @@ const HomeGuidedTour = () => {
             <p className="text-xs uppercase tracking-[0.25em] text-white/80">First time guide</p>
             <h3 className="text-2xl font-bold mt-1">Home Tour {stepIndex + 1}/{tourSteps.length}</h3>
           </div>
-          <button onClick={() => closeTour(false)} className="text-white/90 hover:text-white">
+          <button onClick={closeTour} className="text-white/90 hover:text-white">
             <X size={20} />
           </button>
         </div>
@@ -100,7 +85,7 @@ const HomeGuidedTour = () => {
 
           <div className="flex items-center justify-between gap-3">
             <button
-              onClick={() => closeTour(false)}
+              onClick={closeTour}
               className="px-4 py-2 rounded-xl text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
             >
               Skip Tour
