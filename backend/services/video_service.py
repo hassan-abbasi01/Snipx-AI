@@ -304,28 +304,35 @@ class AIThumbnailGenerator:
             return frame_path
     
     def _resize_with_crop(self, img, target_size):
-        """Resize image to exact dimensions with smart cropping"""
-        target_ratio = target_size[0] / target_size[1]
-        img_ratio = img.width / img.height
-        
-        if img_ratio > target_ratio:
-            # Image is wider - crop width
-            new_height = target_size[1]
-            new_width = int(new_height * img_ratio)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            # Center crop
-            left = (new_width - target_size[0]) // 2
-            img = img.crop((left, 0, left + target_size[0], target_size[1]))
-        else:
-            # Image is taller - crop height
-            new_width = target_size[0]
-            new_height = int(new_width / img_ratio)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            # Center crop
-            top = (new_height - target_size[1]) // 2
-            img = img.crop((0, top, target_size[0], top + target_size[1]))
-        
-        return img
+        """Resize image to exact dimensions while preserving the full frame (no subject cropping)."""
+        target_w, target_h = target_size
+
+        if img.width <= 0 or img.height <= 0:
+            return Image.new('RGB', target_size, (0, 0, 0))
+
+        # Keep full frame visible by fitting inside target canvas.
+        scale = min(target_w / img.width, target_h / img.height)
+        new_w = max(1, int(img.width * scale))
+        new_h = max(1, int(img.height * scale))
+        fitted = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # Build a soft blurred background so letterboxing looks intentional.
+        bg_scale = max(target_w / img.width, target_h / img.height)
+        bg_w = max(1, int(img.width * bg_scale))
+        bg_h = max(1, int(img.height * bg_scale))
+        background = img.resize((bg_w, bg_h), Image.Resampling.LANCZOS)
+
+        left = max(0, (bg_w - target_w) // 2)
+        top = max(0, (bg_h - target_h) // 2)
+        background = background.crop((left, top, left + target_w, top + target_h))
+        background = background.filter(ImageFilter.GaussianBlur(radius=22))
+        background = ImageEnhance.Brightness(background).enhance(0.68)
+
+        # Center the full frame on top of the background.
+        paste_x = (target_w - new_w) // 2
+        paste_y = (target_h - new_h) // 2
+        background.paste(fitted, (paste_x, paste_y))
+        return background
     
     def _enhance_image(self, img):
         """Apply minimal enhancements - keep original look"""
@@ -347,9 +354,10 @@ class AIThumbnailGenerator:
         if text_options is None:
             text_options = {}
         
-        # Ensure font_size is an integer and within valid range (50-200)
-        raw_font_size = text_options.get('font_size', min(width // 12, 100))
-        font_size = int(max(50, min(200, raw_font_size)))  # Clamp between 50-200
+        # Keep text readable without covering a large part of the frame.
+        raw_font_size = text_options.get('font_size', min(width // 16, 72))
+        max_by_height = max(36, int(height * 0.12))
+        font_size = int(max(24, min(max_by_height, raw_font_size)))
         
         text_color = text_options.get('text_color', '#FFFFFF')  # White
         outline_color = text_options.get('outline_color', '#FF6400')  # Orange
@@ -438,25 +446,29 @@ class AIThumbnailGenerator:
         
         # Determine vertical position
         if position == 'top':
-            bar_y = 40
+            bar_y = 24
             print(f"[POSITION] Using TOP position: y={bar_y}")
         elif position == 'center':
-            bar_y = (height - total_height - 80) // 2
+            bar_y = (height - total_height - 44) // 2
             print(f"[POSITION] Using CENTER position: y={bar_y}")
         else:  # bottom
-            bar_y = height - total_height - 120
+            bar_y = height - total_height - 56
             print(f"[POSITION] Using BOTTOM position: y={bar_y}")
+
+        # Keep overlay block inside image bounds.
+        bar_y = max(0, min(bar_y, height - total_height - 8))
         
         # Add background bar if enabled
         if background:
             print(f"[BACKGROUND] Adding background bar with color {background_color} (RGB: {bg_rgb})")
-            bar_height = total_height + 80
+            bar_height = min(height, total_height + 36)
             overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
             overlay_draw = ImageDraw.Draw(overlay)
             
             # Draw gradient bar with custom color
             for i in range(bar_height):
-                alpha = int(220 - (i / bar_height) * 40)
+                alpha = int(170 - (i / max(bar_height, 1)) * 45)
+                alpha = max(80, min(170, alpha))
                 overlay_draw.rectangle(
                     [0, bar_y + i, width, bar_y + i + 1],
                     fill=(*bg_rgb, alpha)
@@ -470,7 +482,7 @@ class AIThumbnailGenerator:
         
         # Draw text
         draw = ImageDraw.Draw(img)
-        current_y = bar_y + 40
+        current_y = bar_y + 16
         
         print(f"[DRAWING] Starting text rendering at y={current_y}")
         print(f"[DRAWING] Text color RGB: {text_rgb}")
@@ -755,7 +767,7 @@ class AIColorEnhancer:
             enhanced = enhanced.astype(np.uint8)
         
         return enhanced
-
+# Audio main cycle
 class AudioEnhancer:
     """
     Advanced Audio Enhancement with REAL Filler Word Detection and VOICE-PRESERVING Noise Reduction
