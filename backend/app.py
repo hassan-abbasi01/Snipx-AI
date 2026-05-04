@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, redirect, url_for, send_file
+from flask import Flask, request, jsonify, redirect, url_for, send_file, make_response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
@@ -1041,7 +1041,7 @@ def generate_thumbnails(user_id, video_id):
     except Exception as e:
         logger.error(f"Generate thumbnails error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
-
+#Audio Enhancement Endpoint - applies noise reduction, volume boost, and filler word removal based on options from frontend
 @app.route('/api/videos/<video_id>/audio/enhance', methods=['POST'])
 @require_auth
 def enhance_audio_realtime(user_id, video_id):
@@ -1801,7 +1801,14 @@ def get_video_thumbnail(video_id):
             # Get primary thumbnail
             thumbnail_path = video.outputs.get('thumbnail')
         
-        if not thumbnail_path or not os.path.exists(thumbnail_path):
+        if not thumbnail_path:
+            return jsonify({'error': 'Thumbnail not found'}), 404
+
+        # Resolve relative paths so serving works across environments (RunPod/local).
+        if not os.path.isabs(thumbnail_path):
+            thumbnail_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), thumbnail_path)
+
+        if not os.path.exists(thumbnail_path):
             return jsonify({'error': 'Thumbnail not found'}), 404
         
         print(f"[THUMBNAIL SERVE] Serving thumbnail: {thumbnail_path}")
@@ -1824,12 +1831,15 @@ def get_video_thumbnail(video_id):
             traceback.print_exc()
             return jsonify({'error': 'Thumbnail file is corrupted'}), 500
         
-        return send_file(
+        response = send_file(
             thumbnail_path,
             mimetype='image/jpeg',
             as_attachment=False,
-            download_name=None
+            download_name=None,
+            conditional=False,
+            max_age=0,
         )
+        return _set_no_cache_headers(response)
         
     except Exception as e:
         logger.error(f"Get thumbnail error: {str(e)}")
@@ -1871,7 +1881,7 @@ def download_video_thumbnail(user_id, video_id):
         
         print(f"[THUMBNAIL DOWNLOAD] Original file: {thumbnail_path}, index: {thumbnail_index}")
         
-        # Create a fresh JPEG in memory using BytesIO for ngrok compatibility
+        # Create a fresh JPEG in memory and return explicit binary headers for proxy compatibility.
         from PIL import Image
         from io import BytesIO
         
@@ -1887,28 +1897,29 @@ def download_video_thumbnail(user_id, video_id):
                 img_buffer = BytesIO()
                 img.save(img_buffer, format='JPEG', quality=100, optimize=False, subsampling=0, progressive=False)
                 img_buffer.seek(0)  # Reset to beginning for reading
-                
-                print(f"[THUMBNAIL DOWNLOAD] Created fresh JPEG in memory: {len(img_buffer.getvalue())} bytes")
+
+                image_bytes = img_buffer.getvalue()
+                if not image_bytes:
+                    return jsonify({'error': 'Generated thumbnail bytes are empty'}), 500
+
+                print(f"[THUMBNAIL DOWNLOAD] Created fresh JPEG in memory: {len(image_bytes)} bytes")
             
             # Generate download filename
             base_name = os.path.splitext(video.filename)[0]
             download_filename = f"{base_name}_thumbnail.jpg"
             
-            # Use send_file with BytesIO for proper binary streaming over ngrok
-            response = send_file(
-                img_buffer,
-                mimetype='image/jpeg',
-                as_attachment=True,
-                download_name=download_filename,
-                max_age=0
-            )
-            
-            # Override headers to prevent ngrok compression/modification
+            # Use explicit response headers so reverse proxies keep attachment behavior intact.
+            response = make_response(image_bytes)
+            response.headers['Content-Type'] = 'image/jpeg'
+            response.headers['Content-Disposition'] = f'attachment; filename="{download_filename}"'
+            response.headers['Content-Length'] = str(len(image_bytes))
             response.headers['X-Content-Type-Options'] = 'nosniff'
             response.headers['Content-Transfer-Encoding'] = 'binary'
-            response.direct_passthrough = False
+            response.headers['Accept-Ranges'] = 'bytes'
+            response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+            response = _set_no_cache_headers(response)
             
-            print(f"[THUMBNAIL DOWNLOAD] Sending via send_file with BytesIO")
+            print(f"[THUMBNAIL DOWNLOAD] Sending binary response: {len(image_bytes)} bytes")
             return response
             
         except Exception as e:
